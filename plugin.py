@@ -176,17 +176,24 @@ class Bugzilla(callbacks.PluginRegexp):
             irc.reply(s)
     bug = wrap(bug, ['text'])
 
-    def query(self, irc, msg, args, query_string):
-        """<search terms>
+    def query(self, irc, msg, args, options, query_string):
+        """[--total] <search terms>
         Searches your Bugzilla using the QuickSearch syntax, and returns
-        a certain number of results."""
+        a certain number of results. If you specify --total, it will return
+        the total number of results found, instead of the actual results."""
 
         channel = msg.args[0]
+        total = ('total', True) in options
         url = self.registryValue('bugzilla', channel)
+
+        # Build the query URL
         full_query = query_string + ' ' +  self.registryValue('queryTerms', channel)
-        queryurl = '%s/buglist.cgi?quicksearch=%s&ctype=csv&columnlist=bug_id&limit=%i' \
-                   % (url, urllib.quote(full_query), 
-                      self.registryValue('queryResultLimit', channel))
+        queryurl = '%s/buglist.cgi?quicksearch=%s&ctype=csv&columnlist=bug_id' \
+                   % (url, urllib.quote(full_query))
+        if not total:
+            queryurl = '%s&limit=%d' \
+                % (queryurl, self.registryValue('queryResultLimit', channel))
+
         self.log.debug('QuickSearch: ' + queryurl)
         bug_csv = utils.web.getUrl(queryurl)
         if not bug_csv:
@@ -202,10 +209,14 @@ class Bugzilla(callbacks.PluginRegexp):
         if not bug_ids:
             irc.reply('No results for "%s."' % query_string)
             return
-        bug_strings = self._getBugs(url, bug_ids, channel)
-        for s in bug_strings:
-            irc.reply(s)
-    query = wrap(query, ['text'])
+
+        if total:
+            irc.reply('%d results for "%s."' % (len(bug_ids), query_string))
+        else:
+            bug_strings = self._getBugs(url, bug_ids, channel)
+            for s in bug_strings:
+                irc.reply(s)
+    query = wrap(query, [getopts({'total' : ''}), 'text'])
 
     def snarfBug(self, irc, msg, match):
         r"""\b(?P<type>bug|attachment)\b[\s#]*(?P<id>\d+)"""
