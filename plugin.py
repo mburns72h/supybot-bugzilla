@@ -218,15 +218,17 @@ class Bugzilla(callbacks.PluginRegexp):
         self.log.debug('Snarfed ID(s): ' + ' '.join(id_matches))
         # Check if the bug has been already snarfed in the last X seconds
         for id in id_matches:
-            if type == 'bug': should_say = self._shouldSayBug(id, channel)
-            else: should_say = self._shouldSayAttachment(id, channel)
+            if type.lower() == 'bug': 
+                should_say = self._shouldSayBug(id, channel)
+            else: 
+                should_say = self._shouldSayAttachment(id, channel)
              
             if should_say:
                 ids.append(id)
         if not ids: return
 
         url = self.registryValue('bugzilla', channel)
-        if type == 'bug': 
+        if type.lower() == 'bug': 
             strings = self._getBugs(url, ids, channel)
         else: 
             strings = self._getAttachments(url, ids, channel)
@@ -437,6 +439,21 @@ class Bugzilla(callbacks.PluginRegexp):
     def _handle_bugmails(self, irc, bugmails):
         for bug in bugmails:
             self.log.debug('Handling bugmail for bug %d' % bug.bug_id)
+
+            # Add the status into the resolution if they both changed.
+            diffs = bug.diffs()
+            resolution = bug.changed('Resolution')
+            status     = bug.changed('Status')
+            if status and resolution:
+                status     = status[0]
+                resolution = resolution[0]
+                if resolution['added']:
+                    status['added'] = status['added'] + ' ' \
+                                     + resolution['added']
+                if resolution['removed']:
+                    status['removed'] = status['removed'] + ' ' \
+                                        + resolution['removed']
+
             for channel in irc.state.channels.keys():
                 self.log.debug('Handling bugmail in channel %s' % channel)
                 # Determine whether or not we should mention this bug at
@@ -449,7 +466,7 @@ class Bugzilla(callbacks.PluginRegexp):
                 field_values = bug.fields()
                 for field in field_values.keys():
                     array = [field_values[field]]
-                    old_item = filter(lambda d: d['what'] == field, bug.diffs())
+                    old_item = bug.changed(field)
                     if old_item:
                         array.append(old_item[0]['removed'])
                     field_values[field] = array
@@ -495,23 +512,13 @@ class Bugzilla(callbacks.PluginRegexp):
                         say_attachments.append(diff['attachment'])
 
                     # If we're watching both status and resolution, and both
-                    # change, don't say Status.
-                    if (diff['what'] == 'Status' 
-                        and ('Resolution' in report or 'All' in report)
-                        and filter(lambda d: d['what'] == 'Resolution',
-                                   bug.diffs())):
-                        continue
-                    # Add the status into the resolution
-                    if diff['what'] == 'Resolution':
-                        status = filter(lambda d: d['what'] == 'Status',
-                                        bug.diffs())
-                        if status: 
-                            status = status[0]
-                            if diff['added']:
-                                status['added'] = status['added'] + ' ' + diff['added']
-                            if diff['removed']:
-                                status['removed'] = status['removed'] + ' ' + diff['removed']
-                            diff = status
+                    # change, don't say Status--say resolution instead.
+                    if (('Resolution' in report or 'All' in report)
+                        and bug.changed('Resolution')
+                        and bug.changed('Status')):
+                        if diff['what'] == 'Status': continue
+                        if diff['what'] == 'Resolution': 
+                            diff = bug.changed('Status')[0]
 
                     bug_messages = self._diff_messages(channel, bug, diff)
                     lines.extend(bug_messages)

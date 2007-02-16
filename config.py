@@ -65,11 +65,11 @@ conf.registerChannelValue(Bugzilla.format, 'change',
     """When the plugin reports that something has changed on a
                         bug, how should that string be formatted?"""))
 conf.registerChannelValue(Bugzilla.format, 'attachment',
-    FormatString(['red'], 
+    FormatString(['green'], 
     """When the plugin reports the details of an attachment, how should we
     format that string?"""))
 conf.registerChannelValue(Bugzilla.format, 'bug',
-    FormatString(['dark gray'], 
+    FormatString(['red'], 
    """When the plugin reports the details of a bug, how should we format 
    that string?"""))
 
