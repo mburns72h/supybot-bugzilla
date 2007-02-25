@@ -142,7 +142,8 @@ class Bugzilla(callbacks.PluginRegexp):
             self.saidBugs[k] = TimeoutQueue(sayTimeout)
             self.saidAttachments[k] = TimeoutQueue(sayTimeout)
         period = self.registryValue('mboxPollTimeout')
-        schedule.addPeriodicEvent(self._pollMbox, period, name=self.name())
+        schedule.addPeriodicEvent(self._pollMbox, period, name=self.name(),
+                                  now=False)
 
     def die(self):
         self.__parent.die()
