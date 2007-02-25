@@ -256,6 +256,16 @@ class Bugmail:
         self.severity  = _get_header(message['X-Bugzilla-Severity'])
         self.priority  = _get_header(message['X-Bugzilla-Priority'])
         self.assignee  = _get_header(message['X-Bugzilla-Assigned-To'])
+        
+        # Get the urlbase of the installation
+        if 'In-Reply-To' in message:
+            baseHeader = _get_header(message['In-Reply-To'])
+        else:
+            baseHeader = _get_header(message['Message-ID'])
+        baseMatch = re.search('@(?P<scheme>https?)\.(?P<url>.+)>$',
+                              baseHeader, re.I)
+        self.urlbase = "%s://%s" % (baseMatch.group('scheme'),
+                                    baseMatch.group('url'))
 
         # Subject Data
         subjectMatch = re.match('\s*\[Bug (\d+)\]\s+(New:)?', 

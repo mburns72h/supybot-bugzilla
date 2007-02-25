@@ -8,6 +8,7 @@
 import supybot.utils as utils
 from supybot.utils.structures import TimeoutQueue
 from supybot.commands import *
+import supybot.conf as conf
 import supybot.plugins as plugins
 import supybot.ircutils as ircutils
 import supybot.registry as registry
@@ -102,6 +103,10 @@ def _message_factory(fp):
         # stop the mailbox iterator
         return ''
 
+#######################
+# XML-Parsing Helpers #
+#######################
+
 def _getTagText(bug, field):
     # XXX This should probably support multiplicable fields
     node = bug.getElementsByTagName(field)
@@ -118,19 +123,425 @@ def _getTagText(bug, field):
 def _getXmlText(node):
     return node[0].childNodes[0].data
 
+####################################################
+# Classes and Utilities for Bugzilla Installations #
+####################################################
+
+# XXX This has to come back into use.
+def _aliasAlreadyInUse(v):
+    allInstalls  = conf.supybot.plugins.Bugzilla.bugzillas._children
+    allAliases = allInstalls.keys()[:]
+    for name, group in allInstalls.iteritems():
+        allAliases.extend(group.aliases())
+    # XXX Somehow we have to exclude the installation we're
+    # modifying.
+    if v in allAliases: return True
+    return False
+
+class BugzillaName(registry.String):
+    """Bugzilla names must contain only alphabetical characters
+    and must not already be in use by some other installation."""
+    def setValue(self, v):
+        v = v.lower()
+        if not re.match('\w+$', v):
+            self.error()
+        registry.String.setValue(self, v)
+
+class BugzillaNames(registry.SpaceSeparatedListOfStrings):
+    Value = BugzillaName
+
+def registerBugzilla(name, url=''):
+    if (not re.match('\w+$', name)):
+        s = utils.str.normalizeWhitespace(BugzillaName.__doc__)
+        raise registry.InvalidRegistryValue("%s (%s)" % (s, name))
+
+    install = conf.registerGroup(conf.supybot.plugins.Bugzilla.bugzillas,
+                                 name.lower())
+    conf.registerGlobalValue(install, 'url',
+        registry.String(url, """Determines the URL to this Bugzilla
+        installation. This must be identical to the urlbase (or sslbase)
+        parameter used by the installation. (The url that shows up in 
+        emails.) It must end with a forward slash."""))
+    conf.registerChannelValue(install, 'queryTerms',
+        registry.String('',
+        """Additional search terms in QuickSearch format, that will be added to
+        every search done with "query" against this installation."""))
+    conf.registerGlobalValue(install, 'aliases',
+        BugzillaNames([], """Alternate names for this Bugzilla
+        installation. These must be globally unique."""))
+
+    conf.registerGroup(install, 'watchedItems', orderAlphabetically=True)
+    conf.registerChannelValue(install.watchedItems, 'product',
+        registry.CommaSeparatedListOfStrings([],
+        """What products should be reported to this channel?"""))
+    conf.registerChannelValue(install.watchedItems, 'component',
+        registry.CommaSeparatedListOfStrings([],
+        """What components should be reported to this channel?"""))
+    conf.registerChannelValue(install.watchedItems, 'all',
+        registry.Boolean(False,
+        """Should *all* changes be reported to this channel?"""))
+
+    conf.registerChannelValue(install, 'reportedChanges',
+        registry.CommaSeparatedListOfStrings(['newBug', 'newAttach', 'Flag',
+        'Attachment Flag', 'Resolution', 'Product', 'Component'],
+        """The names of fields, as they appear in bugmail, that should be
+        reported to this channel."""))
+
+class BugzillaNotFound(registry.NonExistentRegistryEntry):
+    pass
+
+class BugzillaInstall:
+    """Represents a single Bugzilla."""
+
+    '''Words that describe each flag status except "requested."'''
+    status_words = { '+' : 'granted', '-' : 'denied', 
+                     'cancelled' : 'cancelled' }
+
+    def __init__(self, plugin, name):
+        try:
+            self.conf = conf.supybot.plugins.Bugzilla.bugzillas.get(name.lower())
+        except registry.NonExistentRegistryEntry:
+            raise BugzillaNotFound, 'No Bugzilla called %s' % name
+        self.url  = self.conf.url()
+        self.name = name
+        self.aliases = self.conf.aliases()
+        self.aliases.append(name)
+        self.plugin = plugin
+
+    def query(self, terms, total, channel, limit=None):
+        # Build the query URL
+        baseTerms = self.plugin.registryValue('bugzillas.%s.queryTerms' \
+                                              % self.name , channel)
+        fullTerms = "%s %s" % (terms, baseTerms)
+        fullTerms = fullTerms.strip()
+        queryurl = '%sbuglist.cgi?quicksearch=%s&ctype=csv&columnlist=bug_id' \
+                   % (self.url, urllib.quote(fullTerms))
+        if not total and limit:
+            queryurl = '%s&limit=%d' % (queryurl, limit)
+        
+        self.plugin.log.debug('Query: %s' % queryurl)
+
+        bug_csv = utils.web.getUrl(queryurl)
+        if not bug_csv:
+             raise callbacks.Error, 'Got empty CSV'
+
+        if bug_csv.find('DOCTYPE') == -1:
+            bug_ids = bug_csv.split("\n")
+            self.plugin.log.debug('Bug IDs: %r' % bug_ids)
+            del bug_ids[0] # Removes the "bug_id" header.
+        else:
+            # Searching a bug alias will return just that bug.
+            bug_ids = [fullTerms]
+
+        if not bug_ids:
+            return ['No results for "%s."' % terms]
+
+        if total:
+            return ['%d results for "%s."' % (len(bug_ids), terms)]
+        else:
+            return self.getBugs(bug_ids, channel)
+
+    def getAttachments(self, attach_ids, channel):
+        # The code for getting the title is copied from the Web plugin
+        attach_url = '%sattachment.cgi?id=%s&action=edit'
+        attach_bugs = {}
+        lines = []
+
+        # Get the bug ID that each bug is on.
+        for attach_id in attach_ids:
+            my_url = attach_url % (self.url, attach_id)
+            text = utils.web.getUrl(my_url, size=ATTACH_TITLE_SIZE)
+            parser = Web.Title()
+            try:
+                parser.feed(text)
+            except sgmllib.SGMLParseError:
+                self.plugin.log.debug('Encountered a problem parsing %u.', my_url)
+            title  = parser.title.strip()
+            match  = re.search('Attachment.*bug (\d+)', title, re.I)
+            if not match:
+                err = 'Attachment %s was not found or is not accessible.' \
+                       % attach_id
+                lines.append(self.plugin._formatLine(err, channel, 'attachment'))
+                continue
+            bug_id = match.group(1)
+            if bug_id not in attach_bugs:
+                attach_bugs[bug_id] = []
+            attach_bugs[bug_id].append(attach_id)
+
+        # Get the attachment details
+        for bug_id, attachments in attach_bugs.iteritems():
+            self.plugin.log.debug('Getting attachments %r on bug %s' % \
+                                  (attachments, bug_id))
+            attach_strings = self.getAttachmentsOnBug(attachments,
+                                 bug_id, channel, do_error=True)
+            lines.extend(attach_strings)
+        return lines
+
+    def getBugs(self, ids, channel, show_url=True):
+        """Returns an array of formatted strings describing the bug ids,
+        using preferences appropriate to the passed-in channel."""
+
+        bugs = self._getBugXml(ids)
+        bug_strings = [];
+        for bug in bugs:
+            bug_id = bug.getElementsByTagName('bug_id')[0].childNodes[0].data
+            if show_url:
+                bug_url = '%sshow_bug.cgi?id=%s' \
+                          % (self.url, urllib.quote(bug_id))
+            else:
+                bug_url = bug_id + ':'
+
+            if bug.hasAttribute('error'):
+                bug_strings.append(self._bugError(bug, bug_url))
+            else:
+                bug_data = []
+                for field in self.plugin.registryValue('bugFormat', channel):
+                    node_text = _getTagText(bug, field)
+                    if node_text:
+                        bug_data.append(node_text)
+                bug_strings.append('Bug ' + bug_url + ' ' + \
+                                   ', '.join(bug_data))
+
+        bug_strings = [self.plugin._formatLine(s, channel, 'bug') \
+                       for s in bug_strings]
+        return bug_strings
+
+    def getAttachmentsOnBug(self, attach_ids, bug_id, channel, do_error=False):
+        bug = self._getBugXml([bug_id])[0]
+        if bug.hasAttribute('error'):
+            if do_error:
+                return [self._bugError(bug, bug_id)]
+            else:
+                return []
+
+        attachments = bug.getElementsByTagName('attachment')
+        attach_strings = []
+        # Sometimes we're passed ints, sometimes strings. We want to always
+        # have a list of ints so that "in" works below.
+        attach_ids = [int(id) for id in attach_ids]
+        for attachment in attachments:
+            attach_id = int(_getTagText(attachment, 'attachid'))
+            if attach_id not in attach_ids: continue
+
+            attach_url = '%sattachment.cgi?id=%s&action=edit' % (self.url,
+                                                                  attach_id)
+            attach_data = []
+            for field in self.plugin.registryValue('attachFormat', channel):
+                node_text = _getTagText(attachment, field)
+                if node_text:
+                    if (field == 'type'
+                        and attachment.getAttribute('ispatch') == '1'):
+                        node_text = 'patch'
+                    attach_data.append(node_text)
+            attach_strings.append('Attachment ' + attach_url + ' ' \
+                                  + ', '.join(attach_data))
+        attach_strings = [self.plugin._formatLine(s, channel, 'attachment') \
+                          for s in attach_strings]
+        return attach_strings
+
+    def handleBugmail(self, bug, irc):
+        # Add the status into the resolution if they both changed.
+        diffs = bug.diffs()
+        resolution = bug.changed('Resolution')
+        status     = bug.changed('Status')
+        if status and resolution:
+            status     = status[0]
+            resolution = resolution[0]
+            if resolution['added']:
+                status['added'] = status['added'] + ' ' \
+                                 + resolution['added']
+            if resolution['removed']:
+                status['removed'] = status['removed'] + ' ' \
+                                    + resolution['removed']
+
+        for channel in irc.state.channels.keys():
+            if not self._shouldAnnounceBugInChannel(bug, channel):
+                continue
+            self.plugin.log.debug('Handling bugmail in channel %s' % channel)
+            
+            report = self.reportFor(channel)
+
+            # Get the lines we should say about this bugmail
+            lines = []
+            say_attachments = []
+            if 'newBug' in report and bug.new:
+                new_msg = self.plugin.registryValue('messages.newBug', channel)
+                lines.append(new_msg % bug.fields())
+            if 'newAttach' in report and bug.attach_id:
+                attach_msg = self.plugin.registryValue(\
+                                            'messages.newAttachment', channel)
+                lines.append(attach_msg % bug.fields())
+                if self.plugin._shouldSayAttachment(bug.attach_id, channel):
+                    say_attachments.append(bug.attach_id)
+
+            for diff in diffs:
+                if not self._shouldAnnounceChangeInChannel(diff, channel):
+                    continue
+                
+                # If we're watching both status and resolution, and both
+                # change, don't say Status--say resolution instead.
+                if (('Resolution' in report or 'All' in report)
+                    and bug.changed('Resolution')
+                    and bug.changed('Status')):
+                    if diff['what'] == 'Status': continue
+                    if diff['what'] == 'Resolution': 
+                        diff = bug.changed('Status')[0]
+
+                if ('attachment' in diff
+                    # This is a bit of a hack.
+                    and self.plugin._shouldSayAttachment(diff['attachment'],
+                                                         channel)):
+                    say_attachments.append(diff['attachment'])
+
+                bug_messages = self._diff_messages(channel, bug, diff)
+                lines.extend(bug_messages)
+
+            # If we have anything to say in this channel about this
+            # bug, then say it.
+            if lines:
+                self.plugin.log.debug('Reporting %d change(s) to %s' \
+                                      % (len(lines), channel))
+                lines = [self.plugin._formatLine(l, channel, 'change') \
+                         for l in lines]
+                if say_attachments:
+                    attach_strings = self.getAttachmentsOnBug(say_attachments, \
+                        bug.bug_id, channel)
+                    lines.extend(attach_strings)
+                if self.plugin._shouldSayBug(bug.bug_id, channel):
+                    lines.extend(self.getBugs([bug.bug_id], channel))
+                if bug.dupe_of and self.plugin._shouldSayBug(bug.dupe_of, channel): 
+                    lines.extend(self.getBugs([bug.dupe_of], channel))
+                for line in lines:
+                    irc.reply(line, prefixNick=False, to=channel, private=True)
+ 
+    def _diff_messages(self, channel, bm, diff):
+        lines = []
+
+        attach_string = ''
+        if diff.get('attachment', None):
+            attach_string = ' for attachment ' + diff['attachment']
+
+        bug_string = '%s on bug %d' % (attach_string, bm.bug_id)
+        if 'flags' in diff:
+            flags = diff['flags']
+            for status, word in self.status_words.iteritems():
+                for flag in flags[status]:
+                    lines.append('%s %s %s%s.' % (bm.changer, word, 
+                                                  flag['name'], bug_string))
+            for flag in flags['?']:
+                requestee = self.plugin.registryValue('messages.noRequestee', channel)
+                if flag['requestee']: 
+                    requestee = 'from ' + flag['requestee']
+                lines.append('%s requested %s %s%s.' % (bm.changer,
+                             flag['name'], requestee, bug_string))
+        else:
+            what    = diff['what']
+            removed = diff['removed']
+            added   = diff['added']
+
+            line = bm.changer
+            if what in bugmail.MULTI_FIELDS:
+                if added:             line += " added %s to" % added
+                if added and removed: line += " and"
+                if removed:           line += " removed %s from" % removed
+                line += " the %s field%s." % (what, bug_string)
+            elif (what in ['Resolution', 'Status'] and added.find('DUPLICATE') != -1):
+                line += " marked bug %d as a duplicate of bug %d." % \
+                        (bm.bug_id, bm.dupe_of)
+            # We only added something.
+            elif not removed:
+                line += " set the %s field%s to %s." % (what, bug_string, added)
+            # We only removed something
+            elif not added:
+                line += " cleared the %s '%s'%s." % (what, removed, bug_string)
+            # We changed the value of a field from something to 
+            # something else
+            else:
+                line += " changed the %s%s from %s to %s." % \
+                        (what, bug_string, removed, added)
+
+            lines.append(line)
+        return lines
+
+    ######################
+    # Helper Subroutines #
+    ######################
+   
+    def reportFor(self, channel):
+        return self.plugin.registryValue('bugzillas.%s.reportedChanges' \
+                                         % self.name, channel)
+   
+    def _shouldAnnounceBugInChannel(self, bug, channel):
+        if self.plugin.registryValue('bugzillas.%s.watchedItems.all' \
+                                     % self.name, channel):
+            return True
+        
+        # If something was just removed from a particular field, we
+        # want to still report that change in the proper channel.
+        field_values = bug.fields()
+        for field in field_values.keys():
+            array = [field_values[field]]
+            old_item = bug.changed(field)
+            if old_item:
+                array.append(old_item[0]['removed'])
+            field_values[field] = array
+
+        for field, array in field_values.iteritems():
+            for value in array:
+                # Check the configuration for this product, component,
+                # etc.
+                try:
+                    watch_list = self.plugin.registryValue(
+                        'bugzillas.%s.watchedItems.%s' % (self.name, field), channel)
+                    if value in watch_list: return True
+                except registry.NonExistentRegistryEntry:
+                    continue
+                except: raise
+                
+        return False
+
+    def _shouldAnnounceChangeInChannel(self, diff, channel):
+        if ('All' in self.reportFor(channel)
+            or diff['what'] in self.reportFor(channel)):
+            return True
+        return False
+            
+    def _getBugXml(self, ids):
+        queryurl = self.url \
+                   + 'show_bug.cgi?ctype=xml&excludefield=long_desc' \
+                   + '&excludefield=attachmentdata'
+        for id in ids:
+            queryurl = queryurl + '&id=' + urllib.quote(str(id))
+
+        self.plugin.log.debug('Getting bugs from %s' % queryurl)
+
+        bugxml = utils.web.getUrl(queryurl)
+        if not bugxml:
+            raise callbacks.Error, 'Got empty bug content'
+        
+        return minidom.parseString(bugxml).getElementsByTagName('bug')
+
+    def _bugError(self, bug, bug_url):
+        error_type = bug.getAttribute('error')
+        if error_type == 'NotFound':
+            return 'Bug %s was not found.' % bug_url
+        elif error_type == 'NotPermitted':
+            return 'Bug %s is not accessible.' % bug_url
+        return 'Bug %s could not be retrieved: %s' % (bug_url,  error_type)
+
+##########
+# Plugin #
+##########
+
 class Bugzilla(callbacks.PluginRegexp):
     """This plugin provides the ability to interact with Bugzilla installs.
-    It can report changes from your Bugzilla by parsing emails, and it can
+    It can report changes from multiple Bugzillas by parsing emails, and it can
     report the details of bugs and attachments to your channel."""
 
     threaded = True
     callBefore = ['URL', 'Web']
     regexps = ['snarfBugUrl']
     unaddressedRegexps = ['snarfBug']
-
-    '''Words that describe each flag status except "requested."'''
-    status_words = { '+' : 'granted', '-' : 'denied', 
-                     'cancelled' : 'cancelled' }
 
     def __init__(self, irc):
         self.__parent = super(Bugzilla, self)
@@ -144,11 +555,27 @@ class Bugzilla(callbacks.PluginRegexp):
         period = self.registryValue('mboxPollTimeout')
         schedule.addPeriodicEvent(self._pollMbox, period, name=self.name(),
                                   now=False)
+        for name in self.registryValue('bugzillas'):
+            registerBugzilla(name)
 
     def die(self):
         self.__parent.die()
         schedule.removeEvent(self.name())
-
+        
+    def add(self, irc, msg, args, name, url):
+        """<name> <url>
+        Lets the bot know about a new Bugzilla installation that it can
+        interact with. Name is the name that you use most commonly to refer
+        to this installation--it must not have any spaces. URL is the
+        urlbase (or sslbase, if the installation uses that) of the
+        installation."""
+        registerBugzilla(name, url)
+        bugzillas = self.registryValue('bugzillas')
+        bugzillas.append(name.lower())
+        self.setRegistryValue('bugzillas', bugzillas)
+        irc.replySuccess()
+    add = wrap(add, ['admin', 'somethingWithoutSpaces','url'])
+             
     def attachment(self, irc, msg, args, attach_ids):
         """<attach_id> [<attach_id>]+
         Reports the details of the attachment with that id to this channel.
@@ -156,8 +583,8 @@ class Bugzilla(callbacks.PluginRegexp):
         of more than one attachment."""
 
         channel = msg.args[0]
-        url = self.registryValue('bugzilla', channel)
-        lines = self._getAttachments(url, attach_ids, channel)
+        installation = self._defaultBz(channel)
+        lines = installation.getAttachments(attach_ids, channel)
         for l in lines: irc.reply(l)
     attachment = wrap(attachment, [many(('id','attachment'))])
 
@@ -170,9 +597,8 @@ class Bugzilla(callbacks.PluginRegexp):
         channel = msg.args[0]
         bug_ids = re.split('[!?.,\(\)\s]|[\b\W]and[\b\W]*|\bbug\b', 
                            bug_id_string)
-        url = self.registryValue('bugzilla', channel)
-        self.log.debug('Getting bug_ids %s from %s' % (', '.join(bug_ids), url))
-        bug_strings = self._getBugs(url, bug_ids, channel)
+        installation = self._defaultBz(channel)
+        bug_strings = installation.getBugs(bug_ids, channel)
         for s in bug_strings:
             irc.reply(s)
     bug = wrap(bug, ['text'])
@@ -185,42 +611,15 @@ class Bugzilla(callbacks.PluginRegexp):
 
         channel = msg.args[0]
         total = ('total', True) in options
-        url = self.registryValue('bugzilla', channel)
-
-        # Build the query URL
-        full_query = query_string + ' ' +  self.registryValue('queryTerms', channel)
-        queryurl = '%s/buglist.cgi?quicksearch=%s&ctype=csv&columnlist=bug_id' \
-                   % (url, urllib.quote(full_query))
-        if not total:
-            queryurl = '%s&limit=%d' \
-                % (queryurl, self.registryValue('queryResultLimit', channel))
-
-        self.log.debug('QuickSearch: ' + queryurl)
-        bug_csv = utils.web.getUrl(queryurl)
-        if not bug_csv:
-             raise callbacks.Error, 'Got empty CSV'
-
-        if bug_csv.find('DOCTYPE') == -1:
-            bug_ids = bug_csv.split("\n")
-            del bug_ids[0] # Removes the "bug_id" header.
-        else:
-            # Searching a bug alias will return just that bug.
-            bug_ids = [query_string]
-
-        if not bug_ids:
-            irc.reply('No results for "%s."' % query_string)
-            return
-
-        if total:
-            irc.reply('%d results for "%s."' % (len(bug_ids), query_string))
-        else:
-            bug_strings = self._getBugs(url, bug_ids, channel)
-            for s in bug_strings:
-                irc.reply(s)
+        limit = self.registryValue('queryResultLimit', channel)
+        installation = self._defaultBz(channel)
+        strings = installation.query(query_string, total, channel, limit)
+        for s in strings: irc.reply(s)
+        
     query = wrap(query, [getopts({'total' : ''}), 'text'])
 
     def snarfBug(self, irc, msg, match):
-        r"""\b(?P<type>bug|attachment)\b[\s#]*(?P<id>\d+)"""
+        r"""\b((?P<install>\w+)\b\s*)?(?P<type>bug|attachment)\b[\s#]*(?P<id>\d+)"""
         channel = msg.args[0]
         if not self.registryValue('bugSnarfer', channel): return
 
@@ -234,16 +633,17 @@ class Bugzilla(callbacks.PluginRegexp):
                 should_say = self._shouldSayBug(id, channel)
             else: 
                 should_say = self._shouldSayAttachment(id, channel)
-             
+
             if should_say:
                 ids.append(id)
         if not ids: return
 
-        url = self.registryValue('bugzilla', channel)
+        self.log.debug('Install: %r' % match.group('install'))
+        installation = self._bzOrDefault(match.group('install'), channel)
         if type.lower() == 'bug': 
-            strings = self._getBugs(url, ids, channel)
+            strings = installation.getBugs(ids, channel)
         else: 
-            strings = self._getAttachments(url, ids, channel)
+            strings = installation.getAttachments(ids, channel)
 
         for s in strings:
             irc.reply(s, prefixNick=False)
@@ -259,7 +659,29 @@ class Bugzilla(callbacks.PluginRegexp):
         bug_strings = self._getBugs(url, bug_ids, channel, show_url=False)
         for s in bug_strings:
             irc.reply(s, prefixNick=False)
-
+    
+    def _bzOrDefault(self, name, channel):
+        if name is None:
+            return self._defaultBz(channel)
+        
+        try:
+            bz = BugzillaInstall(self, name)
+        except BugzillaNotFound:
+            bz = self._defaultBz(channel)
+            
+        return bz
+    
+    def _defaultBz(self, channel=None):
+        name = self.registryValue('defaultBugzilla', channel)
+        return BugzillaInstall(self, name)
+            
+    def _bzByUrl(self, url):
+        installs = self.registryValue('bugzillas', value=False)
+        for name, group in installs._children.iteritems():
+            if group.url().lower() == url.lower():
+                return BugzillaInstall(self, name)
+        raise BugzillaNotFound, 'No Bugzilla with URL %s' % url
+        
     def _formatLine(self, line, channel, type):
         """Implements the 'format' configuration options."""
         format = self.registryValue('format.%s' % type, channel)
@@ -298,125 +720,6 @@ class Bugzilla(callbacks.PluginRegexp):
         self.saidAttachments[channel].enqueue(attach_id)
         return True
 
-    def _bugError(self, bug, bug_url):
-        error_type = bug.getAttribute('error')
-        if error_type == 'NotFound':
-            return 'Bug %s was not found.' % bug_url
-        elif error_type == 'NotPermitted':
-            return 'Bug %s is not accessible.' % bug_url
-        return 'Bug %s could not be retrieved: %s' % (bug_url,  error_type)
-
-    def _getBugs(self, url, ids, channel, show_url=True):
-        """Returns an array of formatted strings describing the bug ids,
-        using preferences appropriate to the passed-in channel."""
-
-        bugs = self._getBugXml(url, ids)
-        bug_strings = [];
-        for bug in bugs:
-            bug_id = bug.getElementsByTagName('bug_id')[0].childNodes[0].data
-            if show_url:
-                bug_url = '%s/show_bug.cgi?id=%s' % (url, urllib.quote(bug_id))
-            else:
-                bug_url = bug_id + ':'
-
-            if bug.hasAttribute('error'):
-                bug_strings.append(self._bugError(bug, bug_url))
-            else:
-                bug_data = []
-                for field in self.registryValue('bugFormat', channel):
-                    node_text = _getTagText(bug, field)
-                    if node_text:
-                        bug_data.append(node_text)
-                bug_strings.append('Bug ' + bug_url + ' ' + ', '.join(bug_data))
-
-        bug_strings = [self._formatLine(s, channel, 'bug') \
-                       for s in bug_strings]
-        return bug_strings
-
-    def _getBugXml(self, url, ids):
-        queryurl = url + '/show_bug.cgi?ctype=xml&excludefield=long_desc' \
-                   + '&excludefield=attachmentdata'
-        for id in ids:
-            queryurl = queryurl + '&id=' + urllib.quote(str(id))
-
-        self.log.debug('Getting bugs from %s' % queryurl)
-
-        bugxml = utils.web.getUrl(queryurl)
-        if not bugxml:
-            raise callbacks.Error, 'Got empty bug content'
-
-        return minidom.parseString(bugxml).getElementsByTagName('bug')
-
-    def _getAttachments(self, url, attach_ids, channel):
-        # The code for getting the title is copied from the Web plugin
-        attach_url = '%s/attachment.cgi?id=%s&action=edit'
-        attach_bugs = {}
-        lines = []
-
-        # Get the bug ID that each bug is on.
-        for attach_id in attach_ids:
-            my_url = attach_url % (url, attach_id)
-            text = utils.web.getUrl(my_url, size=ATTACH_TITLE_SIZE)
-            parser = Web.Title()
-            try:
-                parser.feed(text)
-            except sgmllib.SGMLParseError:
-                self.log.debug('Encountered a problem parsing %u.', my_url)
-            title  = parser.title.strip()
-            match  = re.search('Attachment.*bug (\d+)', title, re.I)
-            if not match:
-                err = 'Attachment %s was not found or is not accessible.' \
-                       % attach_id
-                lines.append(self._formatLine(err, channel, 'attachment'))
-                continue
-            bug_id = match.group(1)
-            if bug_id not in attach_bugs:
-                attach_bugs[bug_id] = []
-            attach_bugs[bug_id].append(attach_id)
-
-        # Get the attachment details
-        for bug_id, attachments in attach_bugs.iteritems():
-            self.log.debug('Getting attachments %r on bug %s' % \
-                           (attachments, bug_id))
-            attach_strings = self._getAttachmentsOnBug(url, attachments,
-                                 bug_id, channel, do_error=True)
-            lines.extend(attach_strings)
-        return lines
- 
-
-    def _getAttachmentsOnBug(self, url, attach_ids, bug_id, channel, 
-                             do_error=False):
-        bug = self._getBugXml(url, [bug_id])[0]
-        if bug.hasAttribute('error'):
-            if do_error:
-                return [self._bugError(bug, bug_id)]
-            else:
-                return []
-
-        attachments = bug.getElementsByTagName('attachment')
-        attach_strings = []
-        # Sometimes we're passed ints, sometimes strings. We want to always
-        # have a list of ints so that "in" works below.
-        attach_ids = [int(id) for id in attach_ids]
-        for attachment in attachments:
-            attach_id = int(_getTagText(attachment, 'attachid'))
-            if attach_id not in attach_ids: continue
-
-            attach_url = '%s/attachment.cgi?id=%s&action=edit' % (url, attach_id)
-            attach_data = []
-            for field in self.registryValue('attachFormat', channel):
-                node_text = _getTagText(attachment, field)
-                if node_text:
-                    if (field == 'type' 
-                        and attachment.getAttribute('ispatch') == '1'):
-                        node_text = 'patch'
-                    attach_data.append(node_text)
-            attach_strings.append('Attachment ' + attach_url + ' ' \
-                                  + ', '.join(attach_data))
-        attach_strings = [self._formatLine(s, channel, 'attachment') \
-                          for s in attach_strings]
-        return attach_strings
-        
     def __call__(self, irc, msg):
         irc = callbacks.SimpleProxy(irc, msg)
         self.lastIrc = irc
@@ -446,165 +749,17 @@ class Bugzilla(callbacks.PluginRegexp):
             _unlock_file(boxFile)
             boxFile.close()
 
-        self._handle_bugmails(self.lastIrc, bugmails)
-
-    def _handle_bugmails(self, irc, bugmails):
-        for bug in bugmails:
-            self.log.debug('Handling bugmail for bug %d' % bug.bug_id)
-
-            # Add the status into the resolution if they both changed.
-            diffs = bug.diffs()
-            resolution = bug.changed('Resolution')
-            status     = bug.changed('Status')
-            if status and resolution:
-                status     = status[0]
-                resolution = resolution[0]
-                if resolution['added']:
-                    status['added'] = status['added'] + ' ' \
-                                     + resolution['added']
-                if resolution['removed']:
-                    status['removed'] = status['removed'] + ' ' \
-                                        + resolution['removed']
-
-            for channel in irc.state.channels.keys():
-                self.log.debug('Handling bugmail in channel %s' % channel)
-                # Determine whether or not we should mention this bug at
-                # all in this channel.
-                say_bug = False
-                report  = self.registryValue('reportedChanges', channel)
-
-                # If something was just removed from a particular field, we
-                # want to still report that change in the proper channel.
-                field_values = bug.fields()
-                for field in field_values.keys():
-                    array = [field_values[field]]
-                    old_item = bug.changed(field)
-                    if old_item:
-                        array.append(old_item[0]['removed'])
-                    field_values[field] = array
-
-                for field, array in field_values.iteritems():
-                    for value in array:
-                        # Check the configuration for this product, component,
-                        # etc.
-                        try:
-                            watch_list = self.registryValue('watchedItems.%s' \
-                                                            % field, channel)
-                            if value in watch_list:
-                                say_bug = True
-                                report = self.registryValue('watchedItems.%s.' \
-                                         'reportedChanges' % field, channel)
-                        except registry.NonExistentRegistryEntry:
-                            continue
-                        except: raise
-                if self.registryValue('watchedItems.all', channel): 
-                    say_bug = True
-                if not say_bug: continue
-
-                # Get the lines we should say about this bugmail
-                lines = []
-                say_attachments = []
-                if 'newBug' in report and bug.new:
-                    new_msg = self.registryValue('messages.newBug', channel)
-                    lines.append(new_msg % bug.fields())
-                if 'newAttach' in report and bug.attach_id:
-                    attach_msg = self.registryValue('messages.newAttachment', channel)
-                    lines.append(attach_msg % bug.fields())
-                    if self._shouldSayAttachment(bug.attach_id, channel):
-                        say_attachments.append(bug.attach_id)
-
-                for diff in bug.diffs():
-                    if (not ('All' in report or diff['what'] in report)):
-                        continue
-
-                    if ('attachment' in diff
-                        # This is a bit of a hack.
-                        and self._shouldSayAttachment(diff['attachment'],
-                                                      channel)):
-                        say_attachments.append(diff['attachment'])
-
-                    # If we're watching both status and resolution, and both
-                    # change, don't say Status--say resolution instead.
-                    if (('Resolution' in report or 'All' in report)
-                        and bug.changed('Resolution')
-                        and bug.changed('Status')):
-                        if diff['what'] == 'Status': continue
-                        if diff['what'] == 'Resolution': 
-                            diff = bug.changed('Status')[0]
-
-                    bug_messages = self._diff_messages(channel, bug, diff)
-                    lines.extend(bug_messages)
-
-                # If we have anything to say in this channel about this
-                # bug, then say it.
-                if lines:
-                    self.log.debug('Reporting %d change(s) to %s' \
-                                   % (len(lines), channel))
-                    lines = [self._formatLine(l, channel, 'change') \
-                             for l in lines]
-                    url = self.registryValue('bugzilla', channel)
-                    if say_attachments:
-                        attach_strings = self._getAttachmentsOnBug(url, \
-                                             say_attachments, bug.bug_id, \
-                                             channel)
-                        lines.extend(attach_strings)
-                    if self._shouldSayBug(bug.bug_id, channel):
-                        lines.append(self._getBugs(url, [bug.bug_id], channel)[0])
-                    if bug.dupe_of and self._shouldSayBug(bug.dupe_of, channel): 
-                        lines.append(self._getBugs(url, [bug.dupe_of], channel)[0])
-                    for line in lines:
-                        irc.reply(line, prefixNick=False, to=channel, private=True)
- 
-    def _diff_messages(self, channel, bm, diff):
-        lines = []
-
-        attach_string = ''
-        if diff.get('attachment', None):
-            attach_string = ' for attachment ' + diff['attachment']
-
-        bug_string = '%s on bug %d' % (attach_string, bm.bug_id)
-        if 'flags' in diff:
-            flags = diff['flags']
-            for status, word in self.status_words.iteritems():
-                for flag in flags[status]:
-                    lines.append('%s %s %s%s.' % (bm.changer, word, 
-                                                 flag['name'], bug_string))
-            for flag in flags['?']:
-                requestee = self.registryValue('messages.noRequestee', channel)
-                if flag['requestee']: 
-                    requestee = 'from ' + flag['requestee']
-                lines.append('%s requested %s %s%s.' % (bm.changer, 
-                             flag['name'], requestee, bug_string))
-        else:
-            what    = diff['what']
-            removed = diff['removed']
-            added   = diff['added']
-
-            line = bm.changer
-            if what in bugmail.MULTI_FIELDS:
-                if added:             line += " added %s to" % added
-                if added and removed: line += " and"
-                if removed:           line += " removed %s from" % removed
-                line += " the %s field%s." % (what, bug_string)
-            elif (what in ['Resolution', 'Status'] and added.find('DUPLICATE') != -1):
-                line += " marked bug %d as a duplicate of bug %d." % \
-                        (bm.bug_id, bm.dupe_of)
-            # We only added something.
-            elif not removed:
-                line += " set the %s field%s to %s." % \
-                        (what, bug_string, added)
-            # We only removed something
-            elif not added:
-                line += " cleared the %s '%s'%s." % \
-                        (what, removed, bug_string)
-            # We changed the value of a field from something to 
-            # something else
-            else:
-                line += " changed the %s%s from %s to %s." % \
-                        (what, bug_string, removed, added)
-
-            lines.append(line)
-        return lines
+        self._handleBugmails(self.lastIrc, bugmails)
+    
+    def _handleBugmails(self, irc, bugmails):
+        for mail in bugmails:
+            try:
+                installation = self._bzByUrl(mail.urlbase)
+            except BugzillaNotFound:
+                installation = self._defaultBz()
+            self.log.debug('Handling bugmail for bug %s on %s (%s)' \
+                           % (mail.bug_id, mail.urlbase, installation.name))
+            installation.handleBugmail(mail, irc)
 
 Class = Bugzilla
 

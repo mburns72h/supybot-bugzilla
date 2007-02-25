@@ -25,11 +25,20 @@ def configure(advanced):
 class ColorString(registry.OnlySomeStrings):
     """That is not a valid color/format string."""
     validStrings = ircutils.mircColors.keys()
-    validStrings.extend(['bold', 'reverse', 'underlined'])
+    validStrings.extend(['bold', 'reverse', 'underlined', ''])
 
 class FormatString(registry.CommaSeparatedListOfStrings):
     Value = ColorString
-
+    
+class ValidInstall(registry.String):
+    """You must pick the name of a group from the list of bugzillas."""
+    
+    def setValue(self, v):
+        names  = conf.supybot.plugins.Bugzilla.bugzillas()[:]
+        names.append('')
+        if v not in names:
+            self.error()
+        registry.String.setValue(self, v)
 
 Bugzilla = conf.registerPlugin('Bugzilla')
 # This is where your configuration variables (if any) should go.  For example:
@@ -46,8 +55,6 @@ conf.registerGlobalValue(Bugzilla, 'bugSnarferTimeout',
     fetch its data again. If you change the value of this variable, you
     must reload this plugin for the change to take effect."""))
 
-conf.registerChannelValue(Bugzilla, 'bugzilla',
-    registry.String('', """Determines the Bugzilla to query."""))
 conf.registerChannelValue(Bugzilla, 'bugFormat',
     registry.SpaceSeparatedListOfStrings(['bug_severity', 'priority',
         'target_milestone', 'assigned_to', 'bug_status', 'short_desc'],
@@ -76,14 +83,10 @@ conf.registerChannelValue(Bugzilla.format, 'bug',
 conf.registerChannelValue(Bugzilla, 'queryResultLimit',
     registry.PositiveInteger(5, 
     """The number of results to show when using the "query" command."""))
-conf.registerChannelValue(Bugzilla, 'queryTerms',
-    registry.String('', 
-    """Additional search terms in QuickSearch format, that will be added to
-    every search done with "query.\""""))
 
 conf.registerGlobalValue(Bugzilla, 'mbox', 
     registry.String('', """A path to the mbox that we should be watching for
-    bugmail."""))
+    bugmail.""", private=True))
 conf.registerGlobalValue(Bugzilla, 'mboxPollTimeout',
     registry.PositiveInteger(10, """How many seconds should we wait between
     polling the mbox?"""))
@@ -105,25 +108,12 @@ conf.registerChannelValue(Bugzilla.messages, 'noRequestee',
     specifying a requestee? This should probably start with "from." It
     can also be entirely empty, if you want."""))
 
-conf.registerGroup(Bugzilla, 'watchedItems', orderAlphabetically=True)
-conf.registerChannelValue(Bugzilla.watchedItems, 'product',
-    registry.CommaSeparatedListOfStrings([],
-    """What products should be reported to this channel?"""))
-conf.registerChannelValue(Bugzilla.watchedItems, 'component',
-    registry.CommaSeparatedListOfStrings([],
-    """What components should be reported to this channel?"""))
-conf.registerChannelValue(Bugzilla.watchedItems, 'all',
-  registry.Boolean(False, 
-  """Should *all* changes be reported to this channel? If you
-  set this to True, configuration items (such as reportedChanges)
-  will still be used from watchedItems if anything there matches."""))
-
-# What field changes should be reported to this channel?
-conf.registerChannelValue(Bugzilla, 'reportedChanges', 
-    registry.CommaSeparatedListOfStrings(['newBug', 'newAttach', 'Flag',
-    'Attachment Flag', 'Resolution', 'Product', 'Component'],
-    """The names of fields, as they appear in bugmail, that should be reported
-    to this channel. Note that you can override this on a per-watchedItem
-    basis."""))
+conf.registerGlobalValue(Bugzilla, 'bugzillas',
+    registry.SpaceSeparatedListOfStrings([],
+    """The various Bugzilla installations that have been created
+    with the 'add' command."""))
+conf.registerChannelValue(Bugzilla, 'defaultBugzilla',
+        ValidInstall('', """If commands don't specify what installation to use,
+        then which installation should we use?"""))
 
 # vim:set shiftwidth=4 tabstop=4 expandtab textwidth=79:
