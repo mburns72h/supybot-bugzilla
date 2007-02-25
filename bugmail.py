@@ -268,7 +268,15 @@ class Bugmail:
         messageBody = message.get_payload(decode=True)
 
         if self.new:
-            commentStart = messageBody.index("\n\n")
+            diffStartMatch = re.search('^-+$', messageBody,
+                                       re.I | re.M)
+            # In new bugmails, if there is an attachment or some flags,
+            # there can be a diff table and then a comment below it. The
+            # diff table is separated from the bug fields by \n\n, and the
+            # comment is separated from the diff table by \n\n.
+            diffStart = 0
+            if diffStartMatch: diffStart = diffStartMatch.start()
+            commentStart = messageBody.index("\n\n", diffStart)
         else:
             commentLineMatch = re.search('^-+.*Comment.*From .* ---$', 
                                          messageBody, re.I | re.M)
@@ -285,9 +293,10 @@ class Bugmail:
         commentPart = messageBody[commentStart:].strip()
         self.commentPart = commentPart # For debugging
         self._diffArray = []
+        changesPart = messageBody[:commentStart]
+        self._diffArray = _parseDiffs(changesPart)
+
         if not self.new:
-            changesPart = messageBody[:commentStart]
-            self._diffArray = _parseDiffs(changesPart)
             # Duplicate ID
             dupMatch = re.search('marked as a duplicate of (?:bug\s)?(\d+)',
                                  commentPart)
