@@ -655,8 +655,8 @@ class Bugzilla(callbacks.PluginRegexp):
 
         bug_ids =  match.group('bug').split()
         self.log.debug('Snarfed Bug IDs: ' + ' '.join(bug_ids))
-        url = self.registryValue('bugzilla', channel)
-        bug_strings = self._getBugs(url, bug_ids, channel, show_url=False)
+        installation = self._defaultBz(channel)
+        bug_strings = installation.getBugs(bug_ids, channel, show_url=False)
         for s in bug_strings:
             irc.reply(s, prefixNick=False)
     
