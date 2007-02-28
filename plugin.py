@@ -149,7 +149,10 @@ def _getTagText(bug, field):
     return node_text
 
 def _getXmlText(node):
-    return node[0].childNodes[0].data
+    try:
+        return node[0].childNodes[0].data
+    except:
+        return ''
 
 ####################################################
 # Classes and Utilities for Bugzilla Installations #
@@ -785,9 +788,11 @@ class Bugzilla(callbacks.PluginRegexp):
         return BugzillaInstall(self, name)
             
     def _bzByUrl(self, url):
+        domainMatch = re.match('https?://(\S+)/', url, re.I)
+        domain = domainMatch.group(1)
         installs = self.registryValue('bugzillas', value=False)
         for name, group in installs._children.iteritems():
-            if group.url().lower() == url.lower():
+            if group.url().lower().find(domain.lower()) > -1:
                 return BugzillaInstall(self, name)
         raise BugzillaNotFound, 'No Bugzilla with URL %s' % url
         
@@ -851,7 +856,7 @@ class Bugzilla(callbacks.PluginRegexp):
                     continue
                 except:
                     self.log.exception('Exception while parsing message:')
-                    raise
+                    #raise
             boxFile.truncate(0)
         finally:
             _unlock_file(boxFile)
