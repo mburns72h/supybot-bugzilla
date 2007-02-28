@@ -314,9 +314,9 @@ class Bugmail:
             # there can be a diff table and then a comment below it. The
             # diff table is separated from the bug fields by \n\n, and the
             # comment is separated from the diff table by \n\n.
-            diffStart = 0
+            diffStart = messageBody.index("\n\n\n")
             if diffStartMatch: diffStart = diffStartMatch.start()
-            commentStart = messageBody.index("\n\n", diffStart)
+            commentStart = messageBody.index("\n\n\n", diffStart)
             if self.changer == 'None':
                 whoMatch = re.search('ReportedBy: (?P<who>.*)', messageBody)
                 self.changer = whoMatch.group('who')
@@ -334,7 +334,7 @@ class Bugmail:
                 whoMatch = re.search('^(?P<who>.*)\s+changed:$', messageBody, 
                                      re.M)
                 self.changer = whoMatch.group('who')
-
+        
         # Diff Table
         changesPart = messageBody[:commentStart].strip()
         self.diffPart = changesPart # For debugging
@@ -342,8 +342,9 @@ class Bugmail:
                      changesPart, re.M):
             raise NotBugmailException, 'Dependency change.'
 
-        commentPart = messageBody[commentStart:].strip()
-        self.commentPart = commentPart # For debugging
+        sig = re.search("^-- $", messageBody, re.M)
+        self.comment = messageBody[commentStart:sig.start() - 1].strip()
+
         self._diffArray = []
         changesPart = messageBody[:commentStart]
         self._diffArray = _parseDiffs(changesPart)
@@ -351,12 +352,12 @@ class Bugmail:
         if not self.new:
             # Duplicate ID
             dupMatch = re.search('marked as a duplicate of (?:bug\s)?(\d+)',
-                                 commentPart)
+                                 self.comment)
             if dupMatch and self.changed('Resolution'): self.dupe_of = int(dupMatch.group(1))
 
         # Attachment ID, which lives in the comment.
         attachMatch = re.search('^Created an attachment \(id=(\d+)\)',
-                                commentPart, re.M)
+                                self.comment, re.M)
         if attachMatch: self.attach_id = int(attachMatch.group(1))
 
     def changed(self, field):

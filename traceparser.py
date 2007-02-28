@@ -31,12 +31,12 @@
 
 import re
 
-BIN_REGEX   = re.compile(r"Backtrace was generated from '(?P<bin>.*)'")
+BIN_REGEX   = re.compile(r"Backtrace was generated from '(?P<bin>.+)'")
 FRAME_REGEX = re.compile(r"#(?P<level>\d+)\s+(?P<loc>0x[A-Fa-f0-9]+)\s+in\s+"
                          + r"(?P<func>[\?\w]+)(@@(?P<libTag>GLIBC_2.3.2))?\s*"
-                         + r"\((?P<args>[^\)]*)\)\s*(from (?P<library>.*))?"
+                         + r"\((?P<args>[^\)]*)\)\s*(from (?P<library>\S+))?"
                          + r"\s*(at (?P<file>[^:]+):(?P<line>\d+))?")
-IGNORE_LINES = ('No symbol table info available.')
+IGNORE_LINES = ('No symbol table info available.', 'No locals.')
 
 class TraceParseException(Exception):
     pass
@@ -49,10 +49,19 @@ class FrameParseError(TraceParseException):
 
 class StackFrame:
     def __init__(self, string):
-        match = FRAME_REGEX.match(string)
-        if not match:
-            raise FrameParseError, "Couldn't parse %s" % string
-        self.fields = match.groupdict()
+        match  = FRAME_REGEX.match(string)
+        signal = string.find('<signal handler called>')
+        if signal > -1:
+            self.signalHandled = True
+        else:
+            self.signalHandled = False
+    
+        if match:
+            self.fields = match.groupdict()
+        else:
+            if signal == -1:
+                raise FrameParseError, "Couldn't parse %s" % string
+            self.fields = { 'args' : '', 'func' : '' }
         
         self.args = {}
         argsString = self.fields['args']
@@ -60,18 +69,45 @@ class StackFrame:
             argsList = argsString.split(',')
             for arg in argsList:
                 items = arg.split('=', 1)
-                self.args[items[0]] = items[1]
-                
+                try:
+                    self.args[items[0]] = items[1]
+                # Sometimes the split doesn't work perfectly, and we
+                # end up with weird stuff. We should just pass it by.
+                except IndexError:
+                    pass
         self.asString = string
-
+        
+    def function(self):
+        return self.fields['func']
+    
 class StackThread(list):
     def __init__(self, number=0, desc='', *args, **kwargs):
         self.threadNumber = number
         self.threadDesc   = desc
         self.__parent = super(list, self)
         self.__parent.__init__(*args, **kwargs)
+    
+    def functionIndex(self, funcName):
+        """Searches this thread for a stack frame that contains a function
+        with a specific name (case-insensitive). Returns the index of the
+        frame containing the function, or -1 if the frame is not found."""
+        
+        for index, frame in enumerate(self):
+            if frame.fields['func'].lower() == funcName.lower():
+                return index
+        return -1
+    
+    def signalHandlerIndex(self):
+        """Searches this thread for a place where a signal handler was
+        called. In most stack traces, this indicates where we crashed.
+        Returns -1 if this thread doesn't contain a signal handler."""
+        
+        for index, frame in enumerate(self):
+            if frame.signalHandled: return index
+        return -1
+        
 
-traceRe  = re.compile(r"^#(\d+)\s+0x[A-Fa-f0-9]+ in \w+", re.M)
+traceRe  = re.compile(r"^#(\d+)\s+(0x[A-Fa-f0-9]+ in \w+)|(<signal handler called>)", re.M)
 threadRe = re.compile("^Thread (?P<num>\d+) \((?P<desc>.*)\):$")
 
 def _getNextTraceLine(lines):
@@ -97,6 +133,12 @@ class Trace:
     def __init__(self, string):
         if not traceRe.search(string):
             raise NoTrace, "This doesn't look like a stack trace."
+
+        binMatch = BIN_REGEX.search(string)
+        if binMatch:
+            self.bin = binMatch.group('bin')
+        else:
+            self.bin = ''
 
         lines = string.split("\n")
         for count, line in enumerate(lines):

@@ -47,6 +47,8 @@ import urllib
 import xml.dom.minidom as minidom
 
 import bugmail
+import traceparser
+
 import mailbox
 import email
 from time import time
@@ -212,6 +214,25 @@ def registerBugzilla(name, url=''):
         'Attachment Flag', 'Resolution', 'Product', 'Component'],
         """The names of fields, as they appear in bugmail, that should be
         reported to this channel."""))
+    
+    conf.registerGroup(install, 'traces')
+    conf.registerChannelValue(install.traces, 'report',
+        registry.Boolean(False, """Some Bugzilla installations have gdb
+        stack traces in comments. If you turn this on, the bot will report
+        some basic details of any trace that shows up in the comments of
+        a new bug."""))
+    conf.registerChannelValue(install.traces, 'ignoreFunctions',
+        registry.SpaceSeparatedListOfStrings(['__kernel_vsyscall', 'raise',
+        'abort', '??'], """Some functions are useless to report, from a stack trace.
+        This contains a list of function names to skip over when reporting
+        traces to the channel."""))
+    #conf.registerChannelValue(install.traces, 'crashStarts',
+    #    registry.CommaSeparatedListOfStrings([],
+    #    """These are function names that indicate where a crash starts
+    #    in a stack trace."""))
+    conf.registerChannelValue(install.traces, 'frameLimit',
+        registry.PositiveInteger(5, """How many stack frames should be
+        reported from the crash?"""))
 
 class BugzillaNotFound(registry.NonExistentRegistryEntry):
     pass
@@ -422,14 +443,27 @@ class BugzillaInstall:
 
                 bug_messages = self._diff_messages(channel, bug, diff)
                 lines.extend(bug_messages)
+                
+            # Do the formatting for changes
+            lines = [self.plugin._formatLine(l, channel, 'change') \
+                     for l in lines]
+
+            if (bug.new and bug.comment and self.plugin.registryValue(\
+                'bugzillas.%s.traces.report' % self.name, channel)):
+                try:
+                    trace = traceparser.Trace(bug.comment)
+                    line = self._traceLine(trace, channel)
+                    if line: lines.append(line)
+                except traceparser.NoTrace:
+                    pass
+                except:
+                    self.plugin.log.exception('Exception while parsing trace:')
 
             # If we have anything to say in this channel about this
             # bug, then say it.
             if lines:
                 self.plugin.log.debug('Reporting %d change(s) to %s' \
                                       % (len(lines), channel))
-                lines = [self.plugin._formatLine(l, channel, 'change') \
-                         for l in lines]
                 if say_attachments:
                     attach_strings = self.getAttachmentsOnBug(say_attachments, \
                         bug.bug_id, channel)
@@ -441,9 +475,51 @@ class BugzillaInstall:
                 for line in lines:
                     self._send(irc, channel, line)
  
+    ############################
+    # Bugmail Handling Helpers #
+    ############################
+ 
     def _send(self, irc, channel, line):
         msg = ircmsgs.privmsg(channel, line)
         irc.queueMsg(msg)
+        
+    def _traceLine(self, trace, channel):
+        self.plugin.log.debug('Making line for trace: %r' % trace)
+        usedThread = trace.threads[0]
+        fIndex = 0
+        interesting = False
+        for thread in trace.threads:
+            fIndex = thread.signalHandlerIndex()
+            if fIndex > -1:
+                usedThread = thread
+                interesting = True
+                break
+            
+        if not interesting: fIndex = 0
+            #for f in self.plugin.registryValue('bugzillas.%s.traces.crashStarts'
+            #                                   % self.name, channel):
+            #    fIndex = thread.functionIndex(f)
+                
+        funcs = []
+        maxFrames = self.plugin.registryValue(\
+            'bugzillas.%s.traces.frameLimit' % self.name, channel)
+        ignoreFuncs = self.plugin.registryValue(\
+            'bugzillas.%s.traces.ignoreFunctions' \
+            % self.name, channel)
+        usedFrames = 0
+        for frame in usedThread[fIndex:]:
+            if frame.function() == '' or frame.function() in ignoreFuncs:
+                continue
+            funcs.append(frame.function())
+            usedFrames = usedFrames + 1
+            if usedFrames >= maxFrames: break
+        line = 'Trace:'
+        if trace.bin:
+            line = "%s %s ->" % (line, trace.bin)
+        line = "%s %s" % (line, ', '.join(funcs))
+        if not interesting:
+            line = line + ' (Possibly not interesting)'
+        return line
 
     def _diff_messages(self, channel, bm, diff):
         lines = []
@@ -494,9 +570,6 @@ class BugzillaInstall:
             lines.append(line)
         return lines
 
-    ######################
-    # Helper Subroutines #
-    ######################
    
     def reportFor(self, channel):
         return self.plugin.registryValue('bugzillas.%s.reportedChanges' \
@@ -536,6 +609,10 @@ class BugzillaInstall:
             or diff['what'] in self.reportFor(channel)):
             return True
         return False
+
+    ##############################
+    # General Helper Subroutines #
+    ##############################
             
     def _getBugXml(self, ids):
         queryurl = self.url \
@@ -600,6 +677,7 @@ class Bugzilla(callbacks.PluginRegexp):
         to this installation--it must not have any spaces. URL is the
         urlbase (or sslbase, if the installation uses that) of the
         installation."""
+
         registerBugzilla(name, url)
         bugzillas = self.registryValue('bugzillas')
         bugzillas.append(name.lower())
@@ -751,10 +829,10 @@ class Bugzilla(callbacks.PluginRegexp):
         self.saidAttachments[channel].enqueue(attach_id)
         return True
 
-    def poll(self, irc, msg, args):
-        self._pollMbox()
-
     def _pollMbox(self):
+#        return
+#    
+#    def poll(self, irc, msg, args):
         file_name = self.registryValue('mbox')
         if not file_name: return
         boxFile = open(file_name, 'r+b')
@@ -771,7 +849,9 @@ class Bugzilla(callbacks.PluginRegexp):
                     bugmails.append(bugmail.Bugmail(message))
                 except bugmail.NotBugmailException:
                     continue
-                except: raise
+                except:
+                    self.log.exception('Exception while parsing message:')
+                    raise
             boxFile.truncate(0)
         finally:
             _unlock_file(boxFile)
@@ -788,7 +868,12 @@ class Bugzilla(callbacks.PluginRegexp):
             self.log.debug('Handling bugmail for bug %s on %s (%s)' \
                            % (mail.bug_id, mail.urlbase, installation.name))
             for irc in world.ircs:
-                installation.handleBugmail(mail, irc)
+                try:
+                    installation.handleBugmail(mail, irc)
+                except:
+                    self.log.exception(\
+                        'Exception while handling mail for bug %s on %s' \
+                        % (mail.bug_id, irc.network))
 
 Class = Bugzilla
 
