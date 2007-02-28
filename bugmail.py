@@ -2,8 +2,32 @@
 # Copyright (c) 2007, Max Kanat-Alexander
 # All rights reserved.
 #
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
 #
+#   * Redistributions of source code must retain the above copyright notice,
+#     this list of conditions, and the following disclaimer.
+#   * Redistributions in binary form must reproduce the above copyright notice,
+#     this list of conditions, and the following disclaimer in the
+#     documentation and/or other materials provided with the distribution.
+#   * Neither the name of the author of this software nor the name of
+#     contributors to this software may be used to endorse or promote products
+#     derived from this software without specific prior written consent.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
 ###
+
 
 import re
 from pprint import pprint
@@ -169,9 +193,12 @@ def _parseFlagEntry(diff):
     return diff
 
 def _parseFlag(flagString):
-    match = re.search('\s*(?P<name>[^\?]+)(?P<status>\+|-|\?)'
+    match = re.search('\s*(?P<name>[^\?]+)(?P<status>\+|-|\?)?'
                       + '(?:\((?P<requestee>.*)\))?$', flagString.strip())
-    return match.groupdict()
+    flag = match.groupdict()
+    # A hack for bugzilla.gnome.org
+    if flag['status'] is None: flag['status'] = '+'
+    return flag
 
 
 #####################
@@ -262,10 +289,14 @@ class Bugmail:
             baseHeader = _get_header(message['In-Reply-To'])
         else:
             baseHeader = _get_header(message['Message-ID'])
-        baseMatch = re.search('@(?P<scheme>https?)\.(?P<url>.+)>$',
+        baseMatch = re.search('@((?P<scheme>https?)\.)?(?P<url>.+)>$',
                               baseHeader, re.I)
-        self.urlbase = "%s://%s" % (baseMatch.group('scheme'),
-                                    baseMatch.group('url'))
+        if baseMatch.group('scheme'):
+            self.urlbase = "%s://%s" % (baseMatch.group('scheme'),
+                                        baseMatch.group('url'))
+        else:
+            # This is a hack to support bugzilla.gnome.org.
+            self.urlbase = 'http://%s/' % baseMatch.group('url')
 
         # Subject Data
         subjectMatch = re.match('\s*\[Bug (\d+)\]\s+(New:)?', 
@@ -278,8 +309,7 @@ class Bugmail:
         messageBody = message.get_payload(decode=True)
 
         if self.new:
-            diffStartMatch = re.search('^-+$', messageBody,
-                                       re.I | re.M)
+            diffStartMatch = re.search('^-+$', messageBody, re.M)
             # In new bugmails, if there is an attachment or some flags,
             # there can be a diff table and then a comment below it. The
             # diff table is separated from the bug fields by \n\n, and the
@@ -287,11 +317,23 @@ class Bugmail:
             diffStart = 0
             if diffStartMatch: diffStart = diffStartMatch.start()
             commentStart = messageBody.index("\n\n", diffStart)
+            if self.changer == 'None':
+                whoMatch = re.search('ReportedBy: (?P<who>.*)', messageBody)
+                self.changer = whoMatch.group('who')
         else:
-            commentLineMatch = re.search('^-+.*Comment.*From .* ---$', 
-                                         messageBody, re.I | re.M)
+            commentLineMatch = re.search(\
+                '^-+.*Comment.*From (?P<who>.*)\s+\d{4}-\d\d-\d\d .*---$',
+                messageBody, re.I | re.M)
             commentStart = len(messageBody) - 1
-            if commentLineMatch: commentStart = commentLineMatch.start()
+            if commentLineMatch:
+                commentStart = commentLineMatch.start()
+                # This is pre-3.0 support for changer
+                if self.changer == 'None':
+                    self.changer = commentLineMatch.group('who').strip()
+            if self.changer == 'None':
+                whoMatch = re.search('^(?P<who>.*)\s+changed:$', messageBody, 
+                                     re.M)
+                self.changer = whoMatch.group('who')
 
         # Diff Table
         changesPart = messageBody[:commentStart].strip()

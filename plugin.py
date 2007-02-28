@@ -2,14 +2,40 @@
 # Copyright (c) 2007, Max Kanat-Alexander
 # All rights reserved.
 #
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
 #
+#   * Redistributions of source code must retain the above copyright notice,
+#     this list of conditions, and the following disclaimer.
+#   * Redistributions in binary form must reproduce the above copyright notice,
+#     this list of conditions, and the following disclaimer in the
+#     documentation and/or other materials provided with the distribution.
+#   * Neither the name of the author of this software nor the name of
+#     contributors to this software may be used to endorse or promote products
+#     derived from this software without specific prior written consent.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
 ###
+
 
 import supybot.utils as utils
 from supybot.utils.structures import TimeoutQueue
 from supybot.commands import *
 import supybot.conf as conf
+import supybot.world as world
 import supybot.plugins as plugins
+import supybot.ircmsgs as ircmsgs
 import supybot.ircutils as ircutils
 import supybot.registry as registry
 import supybot.schedule as schedule
@@ -357,7 +383,8 @@ class BugzillaInstall:
         for channel in irc.state.channels.keys():
             if not self._shouldAnnounceBugInChannel(bug, channel):
                 continue
-            self.plugin.log.debug('Handling bugmail in channel %s' % channel)
+            self.plugin.log.debug('Handling bugmail in channel %s.%s' \
+                                  % (irc.network, channel))
             
             report = self.reportFor(channel)
 
@@ -412,8 +439,12 @@ class BugzillaInstall:
                 if bug.dupe_of and self.plugin._shouldSayBug(bug.dupe_of, channel): 
                     lines.extend(self.getBugs([bug.dupe_of], channel))
                 for line in lines:
-                    irc.reply(line, prefixNick=False, to=channel, private=True)
+                    self._send(irc, channel, line)
  
+    def _send(self, irc, channel, line):
+        msg = ircmsgs.privmsg(channel, line)
+        irc.queueMsg(msg)
+
     def _diff_messages(self, channel, bm, diff):
         lines = []
 
@@ -720,11 +751,8 @@ class Bugzilla(callbacks.PluginRegexp):
         self.saidAttachments[channel].enqueue(attach_id)
         return True
 
-    def __call__(self, irc, msg):
-        irc = callbacks.SimpleProxy(irc, msg)
-        self.lastIrc = irc
-        self.lastMsg = msg
-        self.__parent.__call__(irc, msg)
+    def poll(self, irc, msg, args):
+        self._pollMbox()
 
     def _pollMbox(self):
         file_name = self.registryValue('mbox')
@@ -749,9 +777,9 @@ class Bugzilla(callbacks.PluginRegexp):
             _unlock_file(boxFile)
             boxFile.close()
 
-        self._handleBugmails(self.lastIrc, bugmails)
+        self._handleBugmails(bugmails)
     
-    def _handleBugmails(self, irc, bugmails):
+    def _handleBugmails(self, bugmails):
         for mail in bugmails:
             try:
                 installation = self._bzByUrl(mail.urlbase)
@@ -759,7 +787,8 @@ class Bugzilla(callbacks.PluginRegexp):
                 installation = self._defaultBz()
             self.log.debug('Handling bugmail for bug %s on %s (%s)' \
                            % (mail.bug_id, mail.urlbase, installation.name))
-            installation.handleBugmail(mail, irc)
+            for irc in world.ircs:
+                installation.handleBugmail(mail, irc)
 
 Class = Bugzilla
 
