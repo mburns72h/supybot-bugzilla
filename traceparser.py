@@ -33,7 +33,7 @@ import re
 
 BIN_REGEX   = re.compile(r"Backtrace was generated from '(?P<bin>.+)'")
 FRAME_REGEX = re.compile(r"#(?P<level>\d+)\s+(?P<loc>0x[A-Fa-f0-9]+)\s+in\s+"
-                         + r"(?P<func>[^@\s]+)(@@(?P<libTag>GLIBC_2.3.2))?\s*"
+                         + r"(?P<func>[^@\s]+)(@+(?P<libTag>GLIBC_2.3.2))?\s*"
                          + r"\((?P<args>[^\)]*)\)\s*(from (?P<library>\S+))?"
                          + r"\s*(at (?P<file>[^:]+):(?P<line>\d+))?")
 IGNORE_LINES = ('No symbol table info available.', 'No locals.')
