@@ -14,7 +14,7 @@ import supybot.world as world
 
 # Use this for the version of this plugin.  You may wish to put a CVS keyword
 # in here if you're keeping the plugin in CVS or some similar system.
-__version__ = "2.23.4.1+"
+__version__ = "3.0.0.1"
 
 # XXX Replace this with an appropriate author or supybot.Author instance.
 __author__ = supybot.Author('Max Kanat-Alexander', 'mkanat',
@@ -25,7 +25,7 @@ __author__ = supybot.Author('Max Kanat-Alexander', 'mkanat',
 __contributors__ = {}
 
 # This is a url where the most recent plugin package can be downloaded.
-__url__ = 'http://supybot.com/Members/mkanat/Bugzilla/download'
+__url__ = 'http://supybot.com/Members/mkanat/Bugzilla'
 
 import config
 import plugin
