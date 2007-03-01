@@ -193,11 +193,13 @@ def _parseFlagEntry(diff):
     return diff
 
 def _parseFlag(flagString):
-    match = re.search('\s*(?P<name>[^\?]+)(?P<status>\+|-|\?)?'
+    match = re.search('\s*(?P<name>[^\?]+)(?P<status>\+|-|\?)'
                       + '(?:\((?P<requestee>.*)\))?$', flagString.strip())
-    flag = match.groupdict()
-    # A hack for bugzilla.gnome.org
-    if flag['status'] is None: flag['status'] = '+'
+    if match:
+        flag = match.groupdict()
+    else:
+        # A hack for bugzilla.gnome.org
+        flag = { 'name' : flagString, 'status' : '+', 'requestee' : None }
     return flag
 
 
