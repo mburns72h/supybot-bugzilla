@@ -880,7 +880,7 @@ class Bugzilla(callbacks.PluginRegexp):
                     continue
                 except:
                     self.log.exception('Exception while parsing message:')
-                    #raise
+                    self.log.debug("Message:\n%s" % message.as_string())
             boxFile.truncate(0)
         finally:
             _unlock_file(boxFile)
