@@ -389,7 +389,7 @@ class BugzillaInstall:
                           for s in attach_strings]
         return attach_strings
 
-    def handleBugmail(self, bug, irc):
+    def handleBugmail(self, bug):
         # Add the status into the resolution if they both changed.
         diffs = bug.diffs()
         resolution = bug.changed('Resolution')
@@ -403,127 +403,92 @@ class BugzillaInstall:
             if resolution['removed']:
                 status['removed'] = status['removed'] + ' ' \
                                     + resolution['removed']
+                    
+        for irc in world.ircs:
+            for channel in irc.state.channels.keys():
+                if self._shouldAnnounceBugInChannel(bug, channel):
+                    try:
+                        self._handleBugmailForChannel(bug, irc, channel)
+                    except:
+                        self.plugin.log.exception(\
+                        'Exception while handling mail for bug %s on %s.%s'\
+                        % (bug.bug_id, irc.network, channel))
 
-        for channel in irc.state.channels.keys():
-            if not self._shouldAnnounceBugInChannel(bug, channel):
+    #######################################
+    # Bugmail Handling: Major Subroutines #
+    #######################################
+
+    def _handleBugmailForChannel(self, bug, irc, channel):
+        self.plugin.log.debug('Handling bugmail in channel %s.%s' \
+                      % (irc.network, channel))
+        report = self.reportFor(channel)
+
+        # Get the lines we should say about this bugmail
+        lines = []
+        say_attachments = []
+        if 'newBug' in report and bug.new:
+            new_msg = self.plugin.registryValue('messages.newBug', channel)
+            lines.append(new_msg % bug.fields())
+        if 'newAttach' in report and bug.attach_id:
+            attach_msg = self.plugin.registryValue(\
+                                        'messages.newAttachment', channel)
+            lines.append(attach_msg % bug.fields())
+            if self.plugin._shouldSayAttachment(bug.attach_id, channel):
+                say_attachments.append(bug.attach_id)
+
+        for diff in bug.diffs():
+            if not self._shouldAnnounceChangeInChannel(diff, channel):
                 continue
-            self.plugin.log.debug('Handling bugmail in channel %s.%s' \
-                                  % (irc.network, channel))
             
-            report = self.reportFor(channel)
+            # If we're watching both status and resolution, and both
+            # change, don't say Status--say resolution instead.
+            if (('Resolution' in report or 'All' in report)
+                and bug.changed('Resolution')
+                and bug.changed('Status')):
+                if diff['what'] == 'Status': continue
+                if diff['what'] == 'Resolution': 
+                    diff = bug.changed('Status')[0]
 
-            # Get the lines we should say about this bugmail
-            lines = []
-            say_attachments = []
-            if 'newBug' in report and bug.new:
-                new_msg = self.plugin.registryValue('messages.newBug', channel)
-                lines.append(new_msg % bug.fields())
-            if 'newAttach' in report and bug.attach_id:
-                attach_msg = self.plugin.registryValue(\
-                                            'messages.newAttachment', channel)
-                lines.append(attach_msg % bug.fields())
-                if self.plugin._shouldSayAttachment(bug.attach_id, channel):
-                    say_attachments.append(bug.attach_id)
+            if ('attachment' in diff
+                # This is a bit of a hack.
+                and self.plugin._shouldSayAttachment(diff['attachment'],
+                                                     channel)):
+                say_attachments.append(diff['attachment'])
 
-            for diff in diffs:
-                if not self._shouldAnnounceChangeInChannel(diff, channel):
-                    continue
-                
-                # If we're watching both status and resolution, and both
-                # change, don't say Status--say resolution instead.
-                if (('Resolution' in report or 'All' in report)
-                    and bug.changed('Resolution')
-                    and bug.changed('Status')):
-                    if diff['what'] == 'Status': continue
-                    if diff['what'] == 'Resolution': 
-                        diff = bug.changed('Status')[0]
-
-                if ('attachment' in diff
-                    # This is a bit of a hack.
-                    and self.plugin._shouldSayAttachment(diff['attachment'],
-                                                         channel)):
-                    say_attachments.append(diff['attachment'])
-
-                bug_messages = self._diff_messages(channel, bug, diff)
-                lines.extend(bug_messages)
-                
-            # Do the formatting for changes
-            lines = [self.plugin._formatLine(l, channel, 'change') \
-                     for l in lines]
-
-            if (bug.new and bug.comment and self.plugin.registryValue(\
-                'bugzillas.%s.traces.report' % self.name, channel)):
-                try:
-                    trace = traceparser.Trace(bug.comment)
-                    line = self._traceLine(trace, channel)
-                    if line: lines.append(line)
-                except traceparser.NoTrace:
-                    pass
-                except:
-                    self.plugin.log.exception('Exception while parsing trace:')
-
-            # If we have anything to say in this channel about this
-            # bug, then say it.
-            if lines:
-                self.plugin.log.debug('Reporting %d change(s) to %s' \
-                                      % (len(lines), channel))
-                if say_attachments:
-                    attach_strings = self.getAttachmentsOnBug(say_attachments, \
-                        bug.bug_id, channel)
-                    lines.extend(attach_strings)
-                if self.plugin._shouldSayBug(bug.bug_id, channel):
-                    lines.extend(self.getBugs([bug.bug_id], channel))
-                if bug.dupe_of and self.plugin._shouldSayBug(bug.dupe_of, channel): 
-                    lines.extend(self.getBugs([bug.dupe_of], channel))
-                for line in lines:
-                    self._send(irc, channel, line)
- 
-    ############################
-    # Bugmail Handling Helpers #
-    ############################
- 
-    def _send(self, irc, channel, line):
-        msg = ircmsgs.privmsg(channel, line)
-        irc.queueMsg(msg)
-        
-    def _traceLine(self, trace, channel):
-        self.plugin.log.debug('Making line for trace: %r' % trace)
-        usedThread = trace.threads[0]
-        fIndex = 0
-        interesting = False
-        for thread in trace.threads:
-            fIndex = thread.signalHandlerIndex()
-            if fIndex > -1:
-                usedThread = thread
-                interesting = True
-                break
+            bug_messages = self._diff_messages(channel, bug, diff)
+            lines.extend(bug_messages)
             
-        if not interesting: fIndex = 0
-            #for f in self.plugin.registryValue('bugzillas.%s.traces.crashStarts'
-            #                                   % self.name, channel):
-            #    fIndex = thread.functionIndex(f)
-                
-        funcs = []
-        maxFrames = self.plugin.registryValue(\
-            'bugzillas.%s.traces.frameLimit' % self.name, channel)
-        ignoreFuncs = self.plugin.registryValue(\
-            'bugzillas.%s.traces.ignoreFunctions' \
-            % self.name, channel)
-        usedFrames = 0
-        for frame in usedThread[fIndex:]:
-            if frame.function() == '' or frame.function() in ignoreFuncs:
-                continue
-            funcs.append(frame.function())
-            usedFrames = usedFrames + 1
-            if usedFrames >= maxFrames: break
-        line = 'Trace:'
-        if trace.bin:
-            line = "%s %s ->" % (line, trace.bin)
-        line = "%s %s" % (line, ', '.join(funcs))
-        if not interesting:
-            line = line + ' (Possibly not interesting)'
-        return line
+        # Do the formatting for changes
+        lines = [self.plugin._formatLine(l, channel, 'change') \
+                 for l in lines]
 
+        if (bug.new and bug.comment and self.plugin.registryValue(\
+            'bugzillas.%s.traces.report' % self.name, channel)):
+            try:
+                trace = traceparser.Trace(bug.comment)
+                line = self._traceLine(trace, channel)
+                if line: lines.append(line)
+            except traceparser.NoTrace:
+                pass
+            except:
+                self.plugin.log.exception('Exception while parsing trace:')
+
+        # If we have anything to say in this channel about this
+        # bug, then say it.
+        if lines:
+            self.plugin.log.debug('Reporting %d change(s) to %s' \
+                                  % (len(lines), channel))
+            if say_attachments:
+                attach_strings = self.getAttachmentsOnBug(say_attachments, \
+                    bug.bug_id, channel)
+                lines.extend(attach_strings)
+            if self.plugin._shouldSayBug(bug.bug_id, channel):
+                lines.extend(self.getBugs([bug.bug_id], channel))
+            if bug.dupe_of and self.plugin._shouldSayBug(bug.dupe_of, channel): 
+                lines.extend(self.getBugs([bug.dupe_of], channel))
+            for line in lines:
+                self._send(irc, channel, line)
+                
     def _diff_messages(self, channel, bm, diff):
         lines = []
 
@@ -572,7 +537,51 @@ class BugzillaInstall:
 
             lines.append(line)
         return lines
-
+        
+    def _traceLine(self, trace, channel):
+        self.plugin.log.debug('Making line for trace: %r' % trace)
+        usedThread = trace.threads[0]
+        fIndex = 0
+        interesting = False
+        for thread in trace.threads:
+            fIndex = thread.signalHandlerIndex()
+            if fIndex > -1:
+                usedThread = thread
+                interesting = True
+                break
+            
+        if not interesting: fIndex = 0
+            #for f in self.plugin.registryValue('bugzillas.%s.traces.crashStarts'
+            #                                   % self.name, channel):
+            #    fIndex = thread.functionIndex(f)
+                
+        funcs = []
+        maxFrames = self.plugin.registryValue(\
+            'bugzillas.%s.traces.frameLimit' % self.name, channel)
+        ignoreFuncs = self.plugin.registryValue(\
+            'bugzillas.%s.traces.ignoreFunctions' % self.name, channel)
+        usedFrames = 0
+        for frame in usedThread[fIndex:]:
+            if frame.function() == '' or frame.function() in ignoreFuncs:
+                continue
+            funcs.append(frame.function())
+            usedFrames = usedFrames + 1
+            if usedFrames >= maxFrames: break
+        line = 'Trace:'
+        if trace.bin:
+            line = "%s %s ->" % (line, trace.bin)
+        line = "%s %s" % (line, ', '.join(funcs))
+        if not interesting:
+            line = line + ' (Possibly not interesting)'
+        return line
+    
+    ########################################
+    # Bugmail Handling: Helper Subroutines #
+    ########################################
+    
+    def _send(self, irc, channel, line):
+        msg = ircmsgs.privmsg(channel, line)
+        irc.queueMsg(msg)
    
     def reportFor(self, channel):
         return self.plugin.registryValue('bugzillas.%s.reportedChanges' \
@@ -872,13 +881,7 @@ class Bugzilla(callbacks.PluginRegexp):
                 installation = self._defaultBz()
             self.log.debug('Handling bugmail for bug %s on %s (%s)' \
                            % (mail.bug_id, mail.urlbase, installation.name))
-            for irc in world.ircs:
-                try:
-                    installation.handleBugmail(mail, irc)
-                except:
-                    self.log.exception(\
-                        'Exception while handling mail for bug %s on %s' \
-                        % (mail.bug_id, irc.network))
+            installation.handleBugmail(mail)
 
 Class = Bugzilla
 
