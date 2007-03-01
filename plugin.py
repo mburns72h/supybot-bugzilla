@@ -725,19 +725,34 @@ class Bugzilla(callbacks.PluginRegexp):
     bug = wrap(bug, ['text'])
 
     def query(self, irc, msg, args, options, query_string):
-        """[--total] <search terms>
+        """[--total] [--install=<install name>] <search terms>
         Searches your Bugzilla using the QuickSearch syntax, and returns
-        a certain number of results. If you specify --total, it will return
-        the total number of results found, instead of the actual results."""
+        a certain number of results.
+        
+        --install specifies the name of an installation to search, instead
+        of using the channel's default installation.
+        
+        If you specify --total, it will return the total number of results
+        found, instead of the actual results."""
 
         channel = msg.args[0]
-        total = ('total', True) in options
-        limit = self.registryValue('queryResultLimit', channel)
+        total   = False
         installation = self._defaultBz(channel)
+        for opt in options:
+            if opt[0] == 'total': total = True
+            if opt[0] == 'install':
+                name = opt[1]
+                try:
+                    installation = BugzillaInstall(self, name)
+                except BugzillaNotFound:
+                    irc.error("No install named '%s'" % name)
+                    return
+        
+        limit = self.registryValue('queryResultLimit', channel)
         strings = installation.query(query_string, total, channel, limit)
         for s in strings: irc.reply(s)
         
-    query = wrap(query, [getopts({'total' : ''}), 'text'])
+    query = wrap(query, [getopts({'total' : '', 'install' : 'something'}), 'text'])
 
     def snarfBug(self, irc, msg, match):
         r"""\b((?P<install>\w+)\b\s*)?(?P<type>bug|attachment)\b[\s#]*(?P<id>\d+)"""
@@ -818,7 +833,7 @@ class Bugzilla(callbacks.PluginRegexp):
                 line = ircutils.underline(line)
             elif already_colored:
                 line = ircutils.mircColor(line, bg=item)
-            else:
+            elif item != '':
                 line = ircutils.mircColor(line, fg=item)
         return line
 
