@@ -208,6 +208,9 @@ def registerBugzilla(name, url=''):
     conf.registerChannelValue(install.watchedItems, 'component',
         registry.CommaSeparatedListOfStrings([],
         """What components should be reported to this channel?"""))
+    conf.registerChannelValue(install.watchedItems, 'changer',
+        registry.SpaceSeparatedListOfStrings([],
+        """Whose changes should be reported to this channel?"""))
     conf.registerChannelValue(install.watchedItems, 'all',
         registry.Boolean(False,
         """Should *all* changes be reported to this channel?"""))
@@ -681,7 +684,7 @@ class Bugzilla(callbacks.PluginRegexp):
     def die(self):
         self.__parent.die()
         schedule.removeEvent(self.name())
-        
+
     def add(self, irc, msg, args, name, url):
         """<name> <url>
         Lets the bot know about a new Bugzilla installation that it can
