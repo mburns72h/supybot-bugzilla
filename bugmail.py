@@ -301,10 +301,10 @@ class Bugmail:
             self.urlbase = 'http://%s/' % baseMatch.group('url')
 
         # Subject Data
-        subjectMatch = re.match('\s*\[Bug (\d+)\]\s+(New:)?', 
-                              _get_header(message['Subject']))
+        subjectMatch = re.search('\s*\[Bug (\d+)\]\s+(New:)?',
+                                 _get_header(message['Subject']))
         if not subjectMatch:
-            raise NotBugmailException, 'Subject does not start with [Bug #]'
+            raise NotBugmailException, 'Subject does not contain [Bug #]'
         self.bug_id = int(subjectMatch.group(1))
         self.new    = bool(subjectMatch.group(2))
 
