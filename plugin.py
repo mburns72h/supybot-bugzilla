@@ -505,8 +505,17 @@ class BugzillaInstall:
             flags = diff['flags']
             for status, word in self.status_words.iteritems():
                 for flag in flags[status]:
+                    # Cancelled flags show up like review?somebody
+                    if status == 'cancelled':
+                        flag_name = "%(name)s%(status)s" % flag
+                        if flag['requestee']:
+                            flag_name = "%s(%s)" \
+                                         % (flag_name, flag['requestee'])
+                    else:
+                        flag_name = flag['name']
+
                     lines.append('%s %s %s%s.' % (bm.changer, word, 
-                                                  flag['name'], bug_string))
+                                                  flag_name, bug_string))
             for flag in flags['?']:
                 requestee = self.plugin.registryValue('messages.noRequestee', channel)
                 if flag['requestee']: 
