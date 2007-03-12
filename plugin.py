@@ -54,6 +54,7 @@ import email
 from time import time
 import os
 import errno
+import sys
 try:
     import fcntl
 except ImportError:
@@ -680,6 +681,8 @@ class Bugzilla(callbacks.PluginRegexp):
                                   now=False)
         for name in self.registryValue('bugzillas'):
             registerBugzilla(name)
+        reload(sys)
+        sys.setdefaultencoding('utf-8')
 
     def die(self):
         self.__parent.die()
