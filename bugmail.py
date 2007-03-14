@@ -311,7 +311,7 @@ class Bugmail:
         messageBody = message.get_payload(decode=True)
 
         if self.new:
-            diffStartMatch = re.search('^-+$', messageBody, re.M)
+            diffStartMatch = re.search('^----+$', messageBody, re.M)
             # In new bugmails, if there is an attachment or some flags,
             # there can be a diff table and then a comment below it. The
             # diff table is separated from the bug fields by \n\n, and the
@@ -335,12 +335,14 @@ class Bugmail:
             if self.changer == 'None':
                 whoMatch = re.search('^(?P<who>.*)\s+changed:$', messageBody, 
                                      re.M)
-                self.changer = whoMatch.group('who')
-        
+                # whoMatch can be None, in a dependency change.
+                if whoMatch: self.changer = whoMatch.group('who')
+       
         # Diff Table
         changesPart = messageBody[:commentStart].strip()
         self.diffPart = changesPart # For debugging
-        if re.search('^Bug \d+ depends on bug \d+, which changed state', 
+        # Check if this is a dependency change
+        if re.search('^Bug \d+ depends on bug \d+, which changed state',
                      changesPart, re.M):
             raise NotBugmailException, 'Dependency change.'
 
