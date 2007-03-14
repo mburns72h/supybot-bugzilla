@@ -51,7 +51,7 @@ import traceparser
 
 import mailbox
 import email
-from time import time
+from time import time, sleep
 import os
 import errno
 import sys
@@ -417,6 +417,9 @@ class BugzillaInstall:
                         self.plugin.log.exception(\
                         'Exception while handling mail for bug %s on %s.%s'\
                         % (bug.bug_id, irc.network, channel))
+                    # Let other threads run, when we're processing lots
+                    # of mail.
+                    sleep(0.001)
 
     #######################################
     # Bugmail Handling: Major Subroutines #
