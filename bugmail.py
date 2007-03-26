@@ -311,7 +311,7 @@ class Bugmail:
         messageBody = message.get_payload(decode=True)
 
         if self.new:
-            diffStartMatch = re.search('^----+$', messageBody, re.M)
+            diffStartMatch = re.search('^-{30,}$', messageBody, re.M)
             # In new bugmails, if there is an attachment or some flags,
             # there can be a diff table and then a comment below it. The
             # diff table is separated from the bug fields by \n\n, and the
@@ -346,8 +346,11 @@ class Bugmail:
                      changesPart, re.M):
             raise NotBugmailException, 'Dependency change.'
 
+        commentEnd = None
         sig = re.search("^-- $", messageBody, re.M)
-        self.comment = messageBody[commentStart:sig.start() - 1].strip()
+        if sig: commentEnd = sig.start() - 1
+        
+        self.comment = messageBody[commentStart:commentEnd].strip()
 
         self._diffArray = []
         changesPart = messageBody[:commentStart]
