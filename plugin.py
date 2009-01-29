@@ -654,8 +654,11 @@ class BugzillaInstall:
         bugxml = utils.web.getUrl(queryurl)
         if not bugxml:
             raise callbacks.Error, 'Got empty bug content'
-        
-        return minidom.parseString(bugxml).getElementsByTagName('bug')
+       
+        try: 
+            return minidom.parseString(bugxml).getElementsByTagName('bug')
+        except Exception:
+            return []
 
     def _bugError(self, bug, bug_url):
         error_type = bug.getAttribute('error')
@@ -780,7 +783,7 @@ class Bugzilla(callbacks.PluginRegexp):
         id_matches = match.group('id').split()
         type = match.group('type')
         ids = []
-        self.log.debug('Snarfed ID(s): ' + ' '.join(id_matches))
+        self.log.debug('Snarfed Bug ID(s): ' + ' '.join(id_matches))
         # Check if the bug has been already snarfed in the last X seconds
         for id in id_matches:
             if type.lower() == 'bug': 
@@ -809,7 +812,7 @@ class Bugzilla(callbacks.PluginRegexp):
 
         url = match.group('url')
         bug_ids =  match.group('bug').split()
-        self.log.debug('Snarfed Bug IDs: ' + ' '.join(bug_ids))
+        self.log.debug('Snarfed Bug IDs from URL: ' + ' '.join(bug_ids))
         try:
             installation = self._bzByUrl(url)
         except BugzillaNotFound:
