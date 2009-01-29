@@ -301,12 +301,12 @@ class Bugmail:
             self.urlbase = 'http://%s/' % baseMatch.group('url')
 
         # Subject Data
-        subjectMatch = re.search('\s*\[Bug (\d+)\]\s+(New:)?',
+        subjectMatch = re.search('\s*\[\w+ (?P<bug_id>\d+)\]\s+(?P<new>New:)?',
                                  _get_header(message['Subject']))
         if not subjectMatch:
             raise NotBugmailException, 'Subject does not contain [Bug #]'
-        self.bug_id = int(subjectMatch.group(1))
-        self.new    = bool(subjectMatch.group(2))
+        self.bug_id = int(subjectMatch.group('bug_id'))
+        self.new    = bool(subjectMatch.group('new'))
 
         messageBody = message.get_payload(decode=True)
 
@@ -318,7 +318,7 @@ class Bugmail:
             # comment is separated from the diff table by \n\n.
             diffStart = messageBody.index("\n\n\n")
             if diffStartMatch: diffStart = diffStartMatch.start()
-            commentStart = messageBody.index("\n\n\n", diffStart)
+            commentStart = messageBody.find("\n\n\n", diffStart) or diffStart
             if self.changer == 'None':
                 whoMatch = re.search('ReportedBy: (?P<who>.*)', messageBody)
                 self.changer = whoMatch.group('who')
