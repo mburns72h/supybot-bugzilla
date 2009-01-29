@@ -198,9 +198,9 @@ def registerBugzilla(name, url=''):
         registry.String('',
         """Additional search terms in QuickSearch format, that will be added to
         every search done with "query" against this installation."""))
-    conf.registerGlobalValue(install, 'aliases',
-        BugzillaNames([], """Alternate names for this Bugzilla
-        installation. These must be globally unique."""))
+#    conf.registerGlobalValue(install, 'aliases',
+#        BugzillaNames([], """Alternate names for this Bugzilla
+#        installation. These must be globally unique."""))
 
     conf.registerGroup(install, 'watchedItems', orderAlphabetically=True)
     conf.registerChannelValue(install.watchedItems, 'product',
@@ -258,8 +258,8 @@ class BugzillaInstall:
             raise BugzillaNotFound, 'No Bugzilla called %s' % name
         self.url  = self.conf.url()
         self.name = name
-        self.aliases = self.conf.aliases()
-        self.aliases.append(name)
+        #self.aliases = self.conf.aliases()
+        #self.aliases.append(name)
         self.plugin = plugin
 
     def query(self, terms, total, channel, limit=None):
@@ -419,7 +419,7 @@ class BugzillaInstall:
                         % (bug.bug_id, irc.network, channel))
                     # Let other threads run, when we're processing lots
                     # of mail.
-                    sleep(0.001)
+                    sleep(0.01)
 
     #######################################
     # Bugmail Handling: Major Subroutines #
