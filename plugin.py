@@ -803,13 +803,17 @@ class Bugzilla(callbacks.PluginRegexp):
             irc.reply(s, prefixNick=False)
 
     def snarfBugUrl(self, irc, msg, match):
-        r"(https?://\S+)/show_bug.cgi\?id=(?P<bug>\w+)"
+        r"(?P<url>https?://\S+/)show_bug.cgi\?id=(?P<bug>\w+)"
         channel = msg.args[0]
         if (not self.registryValue('bugSnarfer', channel)): return
 
+        url = match.group('url')
         bug_ids =  match.group('bug').split()
         self.log.debug('Snarfed Bug IDs: ' + ' '.join(bug_ids))
-        installation = self._defaultBz(channel)
+        try:
+            installation = self._bzByUrl(url)
+        except BugzillaNotFound:
+            installation = self._defaultBz(channel)
         bug_strings = installation.getBugs(bug_ids, channel, show_url=False)
         for s in bug_strings:
             irc.reply(s, prefixNick=False)
