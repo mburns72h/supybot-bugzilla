@@ -230,7 +230,7 @@ def _get_header(str):
    list = decode_header(str)
    retString = ''
    for string, charset in list:
-       retString += string.replace("\n", '')
+       retString += string.replace("\n", '').replace("\r", '')
    return retString
 
 class BugmailParseError(Exception):
@@ -316,9 +316,17 @@ class Bugmail:
             # there can be a diff table and then a comment below it. The
             # diff table is separated from the bug fields by \n\n, and the
             # comment is separated from the diff table by \n\n.
-            diffStart = messageBody.index("\n\n\n")
-            if diffStartMatch: diffStart = diffStartMatch.start()
-            commentStart = messageBody.find("\n\n\n", diffStart) or diffStart
+            if diffStartMatch:
+                diffStart = diffStartMatch.start()
+            else:
+                diffStartMatch = re.search(r"[\r\n]{3,6}", messageBody)
+                diffStart = diffStartMatch.start()
+            commentStartMatch = re.search(r"[\r\n]{3,6}", 
+                                          messageBody[diffstart:])
+            if commentStartMatch:
+                commentStart = commentStartMatch.start();
+            else:
+                commentStart = diffStart
             if self.changer == 'None':
                 whoMatch = re.search('ReportedBy: (?P<who>.*)', messageBody)
                 self.changer = whoMatch.group('who')
