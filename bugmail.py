@@ -322,7 +322,7 @@ class Bugmail:
                 diffStartMatch = re.search(r"[\r\n]{3,6}", messageBody)
                 diffStart = diffStartMatch.start()
             commentStartMatch = re.search(r"[\r\n]{3,6}", 
-                                          messageBody[diffstart:])
+                                          messageBody[diffStart:])
             if commentStartMatch:
                 commentStart = commentStartMatch.start();
             else:
