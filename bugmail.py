@@ -309,6 +309,8 @@ class Bugmail:
         self.new    = bool(subjectMatch.group('new'))
 
         messageBody = message.get_payload(decode=True)
+        # Normalize newlines
+        messageBody = messageBody.replace("\r\n", "\n")
 
         if self.new:
             diffStartMatch = re.search('^-{30,}$', messageBody, re.M)
@@ -319,14 +321,15 @@ class Bugmail:
             if diffStartMatch:
                 diffStart = diffStartMatch.start()
             else:
-                diffStartMatch = re.search(r"[\r\n]{3,6}", messageBody)
+                diffStartMatch = re.search(r"\n\n\n", messageBody)
                 diffStart = diffStartMatch.start()
-            commentStartMatch = re.search(r"[\r\n]{3,6}", 
-                                          messageBody[diffStart:])
+
+            commentStartMatch = re.search(r"\n\n\n", messageBody[diffStart:])
             if commentStartMatch:
                 commentStart = commentStartMatch.start();
             else:
                 commentStart = diffStart
+
             if self.changer == 'None':
                 whoMatch = re.search('ReportedBy: (?P<who>.*)', messageBody)
                 self.changer = whoMatch.group('who')
