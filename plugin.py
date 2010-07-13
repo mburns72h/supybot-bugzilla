@@ -217,8 +217,8 @@ def registerBugzilla(name, url=''):
         """Should *all* changes be reported to this channel?"""))
 
     conf.registerChannelValue(install, 'reportedChanges',
-        registry.CommaSeparatedListOfStrings(['newBug', 'newAttach', 'Flag',
-        'Attachment Flag', 'Resolution', 'Product', 'Component'],
+        registry.CommaSeparatedListOfStrings(['newBug', 'newAttach', 'Flags',
+        'Attachment Flags', 'Resolution', 'Product', 'Component'],
         """The names of fields, as they appear in bugmail, that should be
         reported to this channel."""))
     
