@@ -331,7 +331,9 @@ class Bugmail:
                 commentStart = diffStart
 
             if self.changer == 'None':
-                whoMatch = re.search('ReportedBy: (?P<who>.*)', messageBody)
+                whoMatch = re.search('Reporter: (?P<who>.*)', messageBody)
+                if not whoMatch:
+                    whoMatch = re.search('Reported by: (?P<who>.*)', messageBody)
                 self.changer = whoMatch.group('who')
         else:
             commentLineMatch = re.search(\
