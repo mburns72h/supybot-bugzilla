@@ -308,7 +308,13 @@ class Bugmail:
         self.bug_id = int(subjectMatch.group('bug_id'))
         self.new    = bool(subjectMatch.group('new'))
 
-        messageBody = message.get_payload(decode=True)
+        if message.is_multipart():
+            for part in message.walk():
+                if part.get_content_type() == 'text/plain':
+                    messageBody = part.get_payload(decode=True)
+                    break
+        else:
+            messageBody = message.get_payload(decode=True)
         # Normalize newlines
         messageBody = messageBody.replace("\r\n", "\n")
 
