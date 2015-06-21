@@ -328,7 +328,10 @@ class Bugmail:
                 diffStart = diffStartMatch.start()
             else:
                 diffStartMatch = re.search(r"\n\n\n", messageBody)
-                diffStart = diffStartMatch.start()
+                if diffStartMatch:
+                    diffStart = diffStartMatch.start()
+                else:
+                    diffStart = 0
 
             commentStartMatch = re.search(r"\n\n\n", messageBody[diffStart:])
             if commentStartMatch:
