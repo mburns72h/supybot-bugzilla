@@ -816,7 +816,8 @@ class Bugzilla(callbacks.PluginRegexp):
         try:
             installation = self._bzByUrl(url)
         except BugzillaNotFound:
-            installation = self._defaultBz(channel)
+            self.log.debug('Ignoring unknown Bugzilla: ' + url)
+            return
         bug_strings = installation.getBugs(bug_ids, channel, show_url=False)
         for s in bug_strings:
             irc.reply(s, prefixNick=False)
