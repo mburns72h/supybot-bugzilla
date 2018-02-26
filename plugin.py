@@ -55,6 +55,7 @@ from time import time, sleep
 import os
 import errno
 import sys
+import requests
 try:
     import fcntl
 except ImportError:
@@ -650,8 +651,12 @@ class BugzillaInstall:
             queryurl = queryurl + '&id=' + urllib.quote(str(id))
 
         self.plugin.log.debug('Getting bugs from %s' % queryurl)
+        headers = {}
+        headers['referer'] = self.url + 'show_bug.cgi?id=' + ids[-1]
+        self.plugin.log.debug('headers: ' + str(headers))
 
-        bugxml = utils.web.getUrl(queryurl)
+        r = requests.get(queryurl, headers=headers)
+        bugxml = r.text
         if not bugxml:
             raise callbacks.Error, 'Got empty bug content'
        
